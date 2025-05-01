@@ -1,5 +1,5 @@
-# Используем Ubuntu как базовый образ
-FROM ubuntu:22.04
+# Используем Ubuntu 24.04 как базовый образ
+FROM ubuntu:24.04
 
 # Устанавливаем необходимые зависимости
 RUN apt-get update && apt-get install -y \
@@ -35,7 +35,5 @@ WORKDIR /app
 # Копируем файлы проекта
 COPY . /app/
 
-# Устанавливаем зависимости Python
-RUN pip3 install -r requirements.txt
-
-# Команда для запуска будет передаваться через docker-compose
+# Устанавливаем зависимости Python с флагом --break-system-packages
+RUN pip3 install -r requirements.txt --break-system-packages
