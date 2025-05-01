@@ -1,0 +1,17 @@
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    zlib1g-dev \
+    libssl-dev \
+    gperf \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+RUN git clone --recursive https://github.com/tdlib/telegram-bot-api.git
+WORKDIR /app/telegram-bot-api
+RUN mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=.. .. && \
+    cmake --build . --target install
+RUN mkdir -p /telegram-bot-api-data
+CMD ["/app/telegram-bot-api/bin/telegram-bot-api", "--api-id=$API_ID", "--api-hash=$API_HASH", "--local", "--http-ip-address=0.0.0.0", "--dir=/telegram-bot-api-data", "--log=/app/telegram-bot-api.log", "--verbosity=5"]

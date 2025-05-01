@@ -1,16 +1,17 @@
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
-
-class User(BaseModel):
-    """Сущность пользователя"""
-    id: int
-    telegram_id: str
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    username: Optional[str] = None
-    language_code: Optional[str] = None
-    bothub_id: Optional[str] = None
-    bothub_access_token: Optional[str] = None
-    registered_at: datetime = datetime.now()
-    current_chat_index: int = 1
+class User:
+    def __init__(
+        self,
+        id: int,
+        telegram_id: str,
+        first_name: str = None,
+        last_name: str = None,
+        username: str = None,
+        language_code: str = None
+    ):
+        self.id = id
+        self.telegram_id = telegram_id
+        self.first_name = first_name
+        self.last_name = last_name
+        self.username = username
+        self.language_code = language_code
+        self.current_chat_index = 0

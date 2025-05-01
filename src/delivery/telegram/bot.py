@@ -1,4 +1,7 @@
-from telebot.async_telebot import AsyncTeleBot
+from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.client.default import DefaultBotProperties
 from src.config.settings import Settings
 from src.delivery.telegram.handlers import create_handlers
 from src.domain.service.intent_detection import IntentDetectionService
@@ -7,31 +10,34 @@ from src.domain.usecase.web_search import WebSearchUseCase
 from src.domain.usecase.image_generation import ImageGenerationUseCase
 from src.lib.clients.bothub_client import BothubClient
 from src.adapter.gateway.bothub_gateway import BothubGateway
-from src.adapter.repository.user_repository import UserRepository
-from src.adapter.repository.chat_repository import ChatRepository
+from src.adapter.repository.user_repository import MockUserRepository
+from src.adapter.repository.chat_repository import MockChatRepository
+import logging
 
+logger = logging.getLogger(__name__)
 
-def create_bot(settings: Settings):
-    """Фабричный метод для создания бота"""
-    # Инициализация бота с настройками
-    bot = AsyncTeleBot(
-        settings.TELEGRAM_TOKEN,
-        parse_mode='Markdown'
+def create_bot(settings: Settings) -> tuple[Bot, Dispatcher]:
+    """Фабричный метод для создания бота и диспетчера"""
+    # Создаём сессию с кастомным API URL
+    session = AiohttpSession(api=TelegramAPIServer.from_base(settings.TELEGRAM_API_URL))
+
+    # Инициализируем бота
+    bot = Bot(
+        token=settings.TELEGRAM_TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode='Markdown')
     )
 
-    # Если у нас есть кастомный URL API, попытаемся установить его
-    if hasattr(bot, 'api_url') and settings.TELEGRAM_API_URL:
-        bot.api_url = settings.TELEGRAM_API_URL
-    elif hasattr(bot, 'server') and settings.TELEGRAM_API_URL:
-        bot.server = settings.TELEGRAM_API_URL
+    # Создаём диспетчер
+    dp = Dispatcher()
 
     # Инициализация клиентов
     bothub_client = BothubClient(settings)
 
     # Инициализация адаптеров
     bothub_gateway = BothubGateway(bothub_client)
-    user_repository = UserRepository()
-    chat_repository = ChatRepository()
+    user_repository = MockUserRepository()
+    chat_repository = MockChatRepository()
 
     # Инициализация сервисов
     intent_detection_service = IntentDetectionService()
@@ -42,14 +48,18 @@ def create_bot(settings: Settings):
     image_generation_usecase = ImageGenerationUseCase(bothub_gateway)
 
     # Создание обработчиков
-    create_handlers(
-        bot,
-        chat_session_usecase,
-        web_search_usecase,
-        image_generation_usecase,
-        intent_detection_service,
-        user_repository,
-        chat_repository
+    handlers_dp = create_handlers(
+        chat_session_usecase=chat_session_usecase,
+        web_search_usecase=web_search_usecase,
+        image_generation_usecase=image_generation_usecase,
+        intent_detection_service=intent_detection_service,
+        user_repository=user_repository,
+        chat_repository=chat_repository
     )
 
-    return bot
+    # Подключаем обработчики к диспетчеру
+    dp.include_router(handlers_dp)
+
+    logger.info(f"Bot created with custom Telegram API URL: {settings.TELEGRAM_API_URL}")
+
+    return bot, dp
