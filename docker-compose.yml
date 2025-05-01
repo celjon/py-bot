@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  telegram-bot:
+    build: .
+    container_name: telegram-bot
+    env_file:
+      - .env
+    volumes:
+      - telegram-data:/app/telegram-bot-api-data
+    restart: unless-stopped
+    ports:
+      - "8081:8081"  # Экспортируем порт API
+    command: >
+      bash -c "
+        cd /app/telegram-bot-api/bin &&
+        ./telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --http-ip-address=0.0.0.0 --dir=/app/telegram-bot-api-data > /app/telegram-bot-api.log 2>&1 &
+        cd /app && 
+        python3 bot.py
+      "
+
+volumes:
+  telegram-data:

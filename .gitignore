@@ -1,0 +1,14 @@
+# Виртуальное окружение
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Локальные настройки
+.env
+
+# Директории Docker
+telegram-bot-api-data/
+
+# Логи
+*.log
