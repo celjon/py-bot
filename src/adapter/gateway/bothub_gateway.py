@@ -1,3 +1,5 @@
+# Дополнение файла src/adapter/gateway/bothub_gateway.py
+
 from typing import Dict, Any, Optional, List, Tuple
 from src.lib.clients.bothub_client import BothubClient
 from src.domain.entity.user import User
@@ -121,6 +123,7 @@ class BothubGateway:
         """Сохранение настроек чата"""
         if not chat.bothub_chat_id:
             await self.create_new_chat(user, chat)
+            return
 
         access_token, _, _, _ = await self.get_access_token(user)
 
@@ -144,6 +147,7 @@ class BothubGateway:
         """Сброс контекста чата"""
         if not chat.bothub_chat_id:
             await self.create_new_chat(user, chat)
+            return
 
         access_token, _, _, _ = await self.get_access_token(user)
         await self.client.reset_context(access_token, chat.bothub_chat_id)
@@ -153,6 +157,7 @@ class BothubGateway:
         """Проверка статуса веб-поиска"""
         if not chat.bothub_chat_id:
             await self.create_new_chat(user, chat)
+            return False
 
         access_token, _, _, _ = await self.get_access_token(user)
         return await self.client.get_web_search(access_token, chat.bothub_chat_id)
@@ -161,6 +166,7 @@ class BothubGateway:
         """Включение/выключение веб-поиска"""
         if not chat.bothub_chat_id:
             await self.create_new_chat(user, chat)
+            return
 
         access_token, _, _, _ = await self.get_access_token(user)
         await self.client.enable_web_search(access_token, chat.bothub_chat_id, value)
@@ -178,46 +184,6 @@ class BothubGateway:
             # Обновляем счетчик контекста, если надо запоминать его
             if chat.context_remember:
                 chat.increment_context_counter()
-
-            return response
-        except Exception as e:
-            # Если чат не найден, создаем новый
-            if "CHAT_NOT_FOUND" in str(e):
-                logger.warning(f"Chat not found, creating new one for user {user.id}")
-                await self.create_new_chat(user, chat)
-                return await self.client.send_message(access_token, chat.bothub_chat_id, message, files)
-            raise
-
-    async def send_buffer(self, user: User, chat: Chat) -> Dict[str, Any]:
-        """Отправка буфера сообщений"""
-        if not chat.bothub_chat_id:
-            await self.create_new_chat(user, chat)
-
-        access_token, _, _, _ = await self.get_access_token(user)
-
-        # Собираем все тексты из буфера
-        buffer_messages = chat.buffer.get("messages", [])
-        texts = []
-        files = []
-
-        for buffer_message in buffer_messages:
-            if "text" in buffer_message:
-                texts.append(buffer_message["text"])
-
-            # TODO: Обработка файлов
-
-        # Объединяем тексты
-        message = "\n".join(texts)
-
-        try:
-            response = await self.client.send_message(access_token, chat.bothub_chat_id, message, files)
-
-            # Обновляем счетчик контекста, если надо запоминать его
-            if chat.context_remember:
-                chat.increment_context_counter()
-
-            # Сбрасываем буфер
-            chat.refresh_buffer()
 
             return response
         except Exception as e:

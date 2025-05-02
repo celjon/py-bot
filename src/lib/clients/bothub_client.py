@@ -1,8 +1,12 @@
+# Дополнение файла src/lib/clients/bothub_client.py
+
 import aiohttp
 import json
-from typing import Dict, Any, Optional, List
+import logging
+from typing import Dict, Any, Optional, List, Tuple
 from src.config.settings import Settings
 
+logger = logging.getLogger(__name__)
 
 class BothubClient:
     """Клиент для взаимодействия с BotHub API"""
@@ -92,9 +96,9 @@ class BothubClient:
             return await self._make_request("v2/auth/telegram", "POST", headers, data)
         except Exception as e:
             # Добавим логирование для отладки
-            print(f"Authorization error: {str(e)}")
-            print(f"Request data: {data}")
-            print(f"Headers: {headers}")
+            logger.error(f"Authorization error: {str(e)}")
+            logger.error(f"Request data: {data}")
+            logger.error(f"Headers: {headers}")
             raise Exception(f"BotHub авторизация не удалась. Проверьте BOTHUB_SECRET_KEY. Ошибка: {str(e)}")
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
@@ -102,8 +106,7 @@ class BothubClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/auth/me", "GET", headers)
 
-    async def create_new_chat(self, access_token: str, group_id: str, name: str, model_id: Optional[str] = None) -> \
-    Dict[str, Any]:
+    async def create_new_chat(self, access_token: str, group_id: str, name: str, model_id: Optional[str] = None) -> Dict[str, Any]:
         """Создание нового чата"""
         data = {"name": name}
         if group_id:
@@ -111,7 +114,7 @@ class BothubClient:
         if model_id:
             data["modelId"] = model_id
 
-        print(f"Creating chat with data: {data}")
+        logger.info(f"Creating chat with data: {data}")
 
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/chat", "POST", headers, data)
@@ -155,12 +158,11 @@ class BothubClient:
 
         return await self._make_request("v2/message/send", "POST", headers, data)
 
-    # Добавьте другие методы по мере необходимости
     async def list_models(self, access_token: str) -> Dict[str, Any]:
         """Получение списка доступных моделей"""
         headers = {"Authorization": f"Bearer {access_token}"}
         models = await self._make_request("v2/model/list", "GET", headers)
-        print(f"Available models: {[model.get('id') for model in models]}")
+        logger.info(f"Available models: {[model.get('id') for model in models]}")
         return models
 
     async def create_new_group(self, access_token: str, name: str) -> Dict[str, Any]:
