@@ -325,7 +325,7 @@ def create_handlers(
                     parse_mode="Markdown"
                 )
 
-                # Теперь обрабатываем текст как обычное сообщение
+                # Теперь обрабатываем текст как обычное сообщение, определяя намерение
                 intent_type, intent_data = intent_detection_service.detect_intent(transcribed_text)
 
                 await message.chat.do(ChatAction.TYPING)
@@ -343,7 +343,8 @@ def create_handlers(
 
                 elif intent_type == IntentType.IMAGE_GENERATION:
                     await message.answer("🎨 Генерирую изображение...", parse_mode="Markdown")
-                    response = await image_generation_usecase.generate_image(user, chat, intent_data.get("prompt", transcribed_text))
+                    response = await image_generation_usecase.generate_image(user, chat, intent_data.get("prompt",
+                                                                                                         transcribed_text))
 
                     attachments = response.get("response", {}).get("attachments", [])
                     if attachments:

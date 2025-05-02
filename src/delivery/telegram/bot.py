@@ -10,8 +10,8 @@ from src.domain.usecase.web_search import WebSearchUseCase
 from src.domain.usecase.image_generation import ImageGenerationUseCase
 from src.lib.clients.bothub_client import BothubClient
 from src.adapter.gateway.bothub_gateway import BothubGateway
-from src.adapter.repository.user_repository import MockUserRepository
-from src.adapter.repository.chat_repository import MockChatRepository
+from src.adapter.repository.user_repository import UserRepository
+from src.adapter.repository.chat_repository import ChatRepository
 import logging
 
 logger = logging.getLogger(__name__)

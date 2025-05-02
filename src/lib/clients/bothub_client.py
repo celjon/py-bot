@@ -211,3 +211,41 @@ class BothubClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         data = {"modelId": model_id}
         return await self._make_request(f"v2/chat/{chat_id}", "PATCH", headers, data)
+
+    async def transcribe(self, access_token: str, file_path: str) -> dict:
+        """
+        Транскрибирует аудиофайл с помощью API Whisper
+
+        Args:
+            access_token: Токен доступа
+            file_path: Путь к аудиофайлу
+
+        Returns:
+            dict: Результат транскрибирования
+        """
+        headers = {
+            "Authorization": f"Bearer {access_token}"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            with open(file_path, "rb") as audio_file:
+                form_data = aiohttp.FormData()
+                form_data.add_field(
+                    name="file",
+                    value=audio_file,
+                    filename=os.path.basename(file_path),
+                    content_type="audio/ogg"
+                )
+                form_data.add_field("model", "whisper-1")
+
+                async with session.post(
+                        f"{self.api_url}/api/v2/openai/v1/audio/transcriptions{self.request_query}",
+                        headers=headers,
+                        data=form_data
+                ) as response:
+                    if response.status >= 400:
+                        text = await response.text()
+                        # Используем обычное исключение вместо WhisperException
+                        raise Exception(f"Error {response.status}: {text}")
+
+                    return await response.json()

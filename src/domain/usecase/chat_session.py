@@ -78,7 +78,12 @@ class ChatSessionUseCase:
         Returns:
             str: Текст голосового сообщения
         """
-        # TODO: Реализовать метод в BothubGateway
         logger.info(f"Transcribing voice message for user {user.id}")
-        # Временное решение
-        return "Это текст голосового сообщения (заглушка)"
+
+        try:
+            # Реализация через BotHub API
+            return await self.gateway.transcribe_voice(user, chat, file_url)
+        except Exception as e:
+            logger.error(f"Error in voice transcription: {e}", exc_info=True)
+            # Временное решение - возвращаем текст заглушки
+            return "Это текст голосового сообщения (заглушка)"

@@ -1,5 +1,8 @@
 # Дополнение файла src/adapter/gateway/bothub_gateway.py
 
+import os
+import time
+from src.lib.utils.file_utils import download_file
 from typing import Dict, Any, Optional, List, Tuple
 from src.lib.clients.bothub_client import BothubClient
 from src.domain.entity.user import User
@@ -170,6 +173,29 @@ class BothubGateway:
 
         access_token, _, _, _ = await self.get_access_token(user)
         await self.client.enable_web_search(access_token, chat.bothub_chat_id, value)
+
+    async def transcribe_voice(self, user: User, chat: Chat, file_url: str) -> str:
+        """Транскрибирование голосового сообщения"""
+        access_token, _, _, _ = await self.get_access_token(user)
+
+        try:
+            # Скачиваем файл во временный каталог
+            temp_file = await download_file(file_url, f"voice_{user.id}_{int(time.time())}.ogg")
+
+            # Отправляем на транскрибирование
+            result = await self.client.transcribe(access_token, temp_file)
+
+            # Удаляем временный файл
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+            return result.get("text", "")
+        except Exception as e:
+            logger.error(f"Error in BotHub transcription: {e}", exc_info=True)
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            # Пока просто возвращаем заглушку
+            return "Это текст голосового сообщения (заглушка)"
 
     async def send_message(self, user: User, chat: Chat, message: str, files: List = None) -> Dict[str, Any]:
         """Отправка сообщения"""
