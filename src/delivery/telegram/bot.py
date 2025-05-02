@@ -16,7 +16,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def create_bot(settings: Settings) -> tuple[Bot, Dispatcher]:
+
+def create_bot(settings: Settings, user_repository=None, chat_repository=None) -> tuple[Bot, Dispatcher]:
     """Фабричный метод для создания бота и диспетчера"""
     # Создаём сессию с кастомным API URL
     session = AiohttpSession(api=TelegramAPIServer.from_base(settings.TELEGRAM_API_URL))
@@ -36,8 +37,12 @@ def create_bot(settings: Settings) -> tuple[Bot, Dispatcher]:
 
     # Инициализация адаптеров
     bothub_gateway = BothubGateway(bothub_client)
-    user_repository = MockUserRepository()
-    chat_repository = MockChatRepository()
+
+    # Используем переданные репозитории или создаем моковые
+    if user_repository is None:
+        user_repository = MockUserRepository()
+    if chat_repository is None:
+        chat_repository = MockChatRepository()
 
     # Инициализация сервисов
     intent_detection_service = IntentDetectionService()

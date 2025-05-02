@@ -162,3 +162,50 @@ class BothubClient:
         models = await self._make_request("v2/model/list", "GET", headers)
         print(f"Available models: {[model.get('id') for model in models]}")
         return models
+
+    async def create_new_group(self, access_token: str, name: str) -> Dict[str, Any]:
+        """Создание новой группы"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"name": name}
+        return await self._make_request("v2/group", "POST", headers, data)
+
+    async def save_chat_settings(
+            self,
+            access_token: str,
+            chat_id: str,
+            model: str,
+            max_tokens: Optional[int] = None,
+            include_context: bool = True,
+            system_prompt: str = "",
+            temperature: float = 0.7,
+            top_p: float = 1.0,
+            presence_penalty: float = 0.0,
+            frequency_penalty: float = 0.0
+    ) -> Dict[str, Any]:
+        """Сохранение настроек чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {
+            "model": model,
+            "include_context": include_context,
+            "temperature": temperature,
+            "top_p": top_p,
+            "system_prompt": system_prompt,
+            "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+        }
+
+        if max_tokens:
+            data["max_tokens"] = max_tokens
+
+        return await self._make_request(f"v2/chat/{chat_id}/settings", "PATCH", headers, data)
+
+    async def reset_context(self, access_token: str, chat_id: str) -> Dict[str, Any]:
+        """Сброс контекста чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        return await self._make_request(f"v2/chat/{chat_id}/clear-context", "PUT", headers)
+
+    async def update_chat_model(self, access_token: str, chat_id: str, model_id: str) -> Dict[str, Any]:
+        """Обновление модели чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"modelId": model_id}
+        return await self._make_request(f"v2/chat/{chat_id}", "PATCH", headers, data)
