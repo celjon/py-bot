@@ -1,3 +1,4 @@
+# src/delivery/telegram/bot.py
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
@@ -38,11 +39,20 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     # Инициализация адаптеров
     bothub_gateway = BothubGateway(bothub_client)
 
-    # Используем переданные репозитории или создаем моковые
+    # Используем переданные репозитории или создаем пустые заглушки
     if user_repository is None:
-        user_repository = MockUserRepository()
+        # Здесь была ошибка: вместо MockUserRepository используем просто заглушку
+        import os
+        temp_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../data/temp.db')
+        os.makedirs(os.path.dirname(temp_db_path), exist_ok=True)
+        user_repository = UserRepository(temp_db_path)
+
     if chat_repository is None:
-        chat_repository = MockChatRepository()
+        # Здесь была ошибка: вместо MockChatRepository используем просто заглушку
+        import os
+        temp_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../data/temp.db')
+        os.makedirs(os.path.dirname(temp_db_path), exist_ok=True)
+        chat_repository = ChatRepository(temp_db_path)
 
     # Инициализация сервисов
     intent_detection_service = IntentDetectionService()

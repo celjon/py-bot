@@ -1,5 +1,3 @@
-# Дополнение файла src/adapter/gateway/bothub_gateway.py
-
 import os
 import time
 from src.lib.utils.file_utils import download_file
@@ -11,7 +9,6 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class BothubGateway:
     """Адаптер для взаимодействия с BotHub API"""
@@ -72,6 +69,23 @@ class BothubGateway:
 
         return user.bothub_access_token, group_id, chat_id, model_id
 
+    async def get_available_models(self, access_token: str) -> List[Dict[str, Any]]:
+        """Получение списка доступных моделей"""
+        models_response = await self.client.list_models(access_token)
+        return models_response
+
+    def is_gpt_model(self, model: Dict[str, Any]) -> bool:
+        """Проверка, является ли модель GPT-моделью"""
+        return "TEXT_TO_TEXT" in model.get("features", [])
+
+    async def get_default_model(self, access_token: str) -> Dict[str, Any]:
+        """Выбор модели по умолчанию, как в PHP-боте"""
+        models = await self.get_available_models(access_token)
+        for model in models:
+            if (model.get("isDefault", False) or model.get("isAllowed", False)) and self.is_gpt_model(model):
+                return model
+        raise Exception("No suitable GPT model found")
+
     async def create_new_chat(self, user: User, chat: Chat, is_image_generation: bool = False) -> None:
         """Создание нового чата"""
         access_token, group_id, _, _ = await self.get_access_token(user)
@@ -83,44 +97,48 @@ class BothubGateway:
             user.bothub_group_id = group_id
 
         # Определяем модель в зависимости от типа чата
-        model_id = None
         if is_image_generation:
             model_id = user.image_generation_model or "dall-e"
+            try:
+                models = await self.get_available_models(access_token)
+                available_models = [model["id"] for model in models]
+                if model_id not in available_models:
+                    logger.warning(f"Image generation model {model_id} not available, using default")
+                    image_models = [model for model in models if "IMAGE_GENERATION" in model.get("features", [])]
+                    model_id = image_models[0]["id"] if image_models else "dall-e"
+            except Exception as e:
+                logger.error(f"Error getting models list for image generation: {str(e)}")
+                model_id = "dall-e"
         else:
-            model_id = user.gpt_model or "gpt-3.5-turbo"
-
-        # Получаем список доступных моделей для валидации
-        try:
-            models = await self.client.list_models(access_token)
-            available_models = [model["id"] for model in models]
-
-            # Проверяем, что модель доступна
-            if model_id not in available_models:
-                logger.warning(f"Model {model_id} not available, using default")
-                default_models = [model for model in models if model.get('is_default')]
-                if default_models:
-                    model_id = default_models[0]["id"]
-                else:
-                    model_id = models[0]["id"] if models else "gpt-3.5-turbo"
-        except Exception as e:
-            logger.error(f"Error getting models list: {str(e)}")
-            # Используем модель по умолчанию
-            model_id = "gpt-3.5-turbo" if not is_image_generation else "dall-e"
+            try:
+                default_model = await self.get_default_model(access_token)
+                model_id = default_model.get("parentId", default_model.get("id"))
+                chat.bothub_chat_model = default_model.get("id")  # Сохраняем id модели
+            except Exception as e:
+                logger.error(f"Error selecting default model: {str(e)}")
+                model_id = "gpt-4o-mini "
+                chat.bothub_chat_model = model_id
 
         logger.info(f"Creating new chat for user {user.id} with model {model_id}")
-        response = await self.client.create_new_chat(
-            access_token,
-            group_id,
-            f"Telegram chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            model_id
-        )
+        try:
+            response = await self.client.create_new_chat(
+                access_token,
+                group_id,
+                f"Telegram chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                model_id
+            )
+            chat.bothub_chat_id = response["id"]
+            if not chat.bothub_chat_model:
+                chat.bothub_chat_model = response.get("model_id", model_id)
 
-        chat.bothub_chat_id = response["id"]
-        chat.bothub_chat_model = response.get("model_id", model_id)
-
-        # Если нужны дополнительные настройки чата
-        if chat.system_prompt or not chat.context_remember:
-            await self.save_chat_settings(user, chat)
+            # Если нужны дополнительные настройки чата
+            if chat.system_prompt or not chat.context_remember:
+                await self.save_chat_settings(user, chat)
+        except Exception as e:
+            logger.error(f"Error creating chat: {str(e)}")
+            if "MODEL_NOT_FOUND" in str(e):
+                logger.warning(f"Model {model_id} not found. Available models: {await self.get_available_models(access_token)}")
+            raise
 
     async def save_chat_settings(self, user: User, chat: Chat) -> None:
         """Сохранение настроек чата"""
