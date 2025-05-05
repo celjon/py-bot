@@ -85,5 +85,5 @@ class ChatSessionUseCase:
             return await self.gateway.transcribe_voice(user, chat, file_url)
         except Exception as e:
             logger.error(f"Error in voice transcription: {e}", exc_info=True)
-            # Временное решение - возвращаем текст заглушки
-            return "Это текст голосового сообщения (заглушка)"
+            # Если не удалось распознать, возвращаем сообщение об ошибке
+            return "Не удалось распознать голосовое сообщение"

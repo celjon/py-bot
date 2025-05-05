@@ -23,7 +23,7 @@ class BothubClient:
             headers: Dict[str, str] = None,
             data: Dict[str, Any] = None,
             as_json: bool = True,
-            timeout: int = 10
+            timeout: int = 60
     ) -> Dict[str, Any]:
         """Базовый метод для выполнения запросов к API"""
         url = f"{self.api_url}/api/{path}{self.request_query}"
@@ -154,9 +154,38 @@ class BothubClient:
             "stream": False
         }
 
-        # TODO: Реализовать загрузку файлов
+        try:
+            response = await self._make_request("v2/message/send", "POST", headers, data, timeout=30)
 
-        return await self._make_request("v2/message/send", "POST", headers, data)
+            # Формируем результат
+            result = {
+                "response": {
+                    "content": "Извините, не удалось получить ответ от сервера"
+                }
+            }
+
+            # Извлекаем содержимое ответа
+            if "content" in response:
+                result["response"]["content"] = response["content"]
+
+            # Обрабатываем вложения (изображения)
+            if "attachments" in response:
+                result["response"]["attachments"] = response["attachments"]
+
+            # Добавляем токены из транзакции
+            if "transaction" in response and "amount" in response["transaction"]:
+                result["tokens"] = int(response["transaction"]["amount"])
+
+            return result
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
+            # Возвращаем понятную ошибку для обработки
+            return {
+                "response": {
+                    "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
+                }
+            }
+
 
     async def list_models(self, access_token: str) -> Dict[str, Any]:
         """Получение списка доступных моделей"""
@@ -245,7 +274,6 @@ class BothubClient:
                 ) as response:
                     if response.status >= 400:
                         text = await response.text()
-                        # Используем обычное исключение вместо WhisperException
                         raise Exception(f"Error {response.status}: {text}")
 
                     return await response.json()

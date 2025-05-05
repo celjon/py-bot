@@ -91,56 +91,118 @@ def create_handlers(
     @dp.message(Command("start"))
     async def handle_start_command(message: Message):
         """Обработка команды /start"""
-        user = await get_or_create_user(message)
-        # Проверяем наличие реферального кода
-        if message.text and len(message.text.split()) > 1:
-            user.referral_code = message.text.split()[1]
-            await user_repository.update(user)
+        try:
+            user = await get_or_create_user(message)
+            # Проверяем наличие реферального кода
+            if message.text and len(message.text.split()) > 1:
+                user.referral_code = message.text.split()[1]
+                await user_repository.update(user)
 
-        await message.answer(
-            "👋 Привет! Я BotHub, умный ассистент на базе нейросетей.\n\n"
-            "✨ Я могу:\n"
-            "📝 Общаться с вами, отвечать на вопросы\n"
-            "🔍 Искать информацию в интернете\n"
-            "🎨 Генерировать изображения\n\n"
-            "Просто напишите мне, что вы хотите, и я автоматически определю ваше намерение!\n\n"
-            "Полезные команды:\n"
-            "/reset - сбросить контекст разговора\n"
-            "/help - получить справку",
-            parse_mode="Markdown"
-        )
+            await message.answer(
+                "👋 Привет! Я BotHub, умный ассистент на базе нейросетей.\n\n"
+                "✨ Я могу:\n"
+                "📝 Общаться с вами, отвечать на вопросы\n"
+                "🔍 Искать информацию в интернете\n"
+                "🎨 Генерировать изображения\n\n"
+                "Просто напишите мне, что вы хотите, и я автоматически определю ваше намерение!\n\n"
+                "Полезные команды:\n"
+                "/reset - сбросить контекст разговора\n"
+                "/help - получить справку",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error processing /start command: {e}", exc_info=True)
+            await message.answer(
+                "❌ Извините, произошла ошибка при обработке команды",
+                parse_mode="Markdown"
+            )
 
     @dp.message(Command("reset"))
     async def handle_reset_command(message: Message):
         """Обработка команды /reset для сброса контекста"""
-        user = await get_or_create_user(message)
-        chat = await get_or_create_chat(user)
+        try:
+            user = await get_or_create_user(message)
+            chat = await get_or_create_chat(user)
 
-        # Сбрасываем счетчик контекста и контекст на сервере BotHub
-        await chat_session_usecase.reset_context(user, chat)
-        await chat_repository.update(chat)
+            # Сбрасываем счетчик контекста и контекст на сервере BotHub
+            await chat_session_usecase.reset_context(user, chat)
+            await chat_repository.update(chat)
 
-        await message.answer(
-            "🔄 Контекст разговора сброшен! Теперь я не буду учитывать предыдущие сообщения.",
-            parse_mode="Markdown"
-        )
+            await message.answer(
+                "🔄 Контекст разговора сброшен! Теперь я не буду учитывать предыдущие сообщения.",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error resetting context: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось сбросить контекст. Попробуйте еще раз.",
+                parse_mode="Markdown"
+            )
 
     @dp.message(Command("help"))
     async def handle_help_command(message: Message):
         """Обработка команды /help"""
-        await message.answer(
-            "🔍 **Как пользоваться ботом:**\n\n"
-            "1. **Для обычного общения** просто напишите свой вопрос или сообщение\n"
-            "   Например: *\"Расскажи о квантовой физике\"*\n\n"
-            "2. **Для поиска в интернете** используйте слова: найди, поищи, загугли\n"
-            "   Например: *\"Найди информацию о последних новостях\"*\n\n"
-            "3. **Для генерации изображений** используйте слова: нарисуй, сгенерируй, создай\n"
-            "   Например: *\"Нарисуй красивый закат над океаном\"*\n\n"
-            "📋 **Полезные команды:**\n"
-            "/reset - сбросить контекст разговора\n"
-            "/help - получить эту справку",
-            parse_mode="Markdown"
-        )
+        try:
+            await message.answer(
+                "🔍 **Как пользоваться ботом:**\n\n"
+                "1. **Для обычного общения** просто напишите свой вопрос или сообщение\n"
+                "   Например: *\"Расскажи о квантовой физике\"*\n\n"
+                "2. **Для поиска в интернете** используйте слова: найди, поищи, загугли\n"
+                "   Например: *\"Найди информацию о последних новостях\"*\n\n"
+                "3. **Для генерации изображений** используйте слова: нарисуй, сгенерируй, создай\n"
+                "   Например: *\"Нарисуй красивый закат над океаном\"*\n\n"
+                "📋 **Полезные команды:**\n"
+                "/reset - сбросить контекст разговора\n"
+                "/help - получить эту справку",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error processing /help command: {e}", exc_info=True)
+            await message.answer(
+                "❌ Извините, произошла ошибка при обработке команды",
+                parse_mode="Markdown"
+            )
+
+    @dp.message(Command("continue"))
+    async def handle_continue_command(message: Message):
+        """Обработка команды /continue для продолжения контекста"""
+        try:
+            user = await get_or_create_user(message)
+            chat = await get_or_create_chat(user)
+
+            # Убеждаемся, что используется модель, поддерживающая контекст
+            if not chat.bothub_chat_model or not chat.context_remember:
+                await message.answer(
+                    "❌ Команда /continue доступна только для моделей с поддержкой контекста.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Отправляем запрос на продолжение
+            await message.chat.do(ChatAction.TYPING)
+            prompt = "Продолжай" if user.language_code == "ru" else "Continue"
+
+            response = await chat_session_usecase.send_message(
+                user,
+                chat,
+                prompt,
+                None
+            )
+
+            content = response.get("response", {}).get("content", "Извините, произошла ошибка")
+            await send_long_message(message, content)
+
+            # Если есть счетчик капсов, добавляем его
+            if "tokens" in response:
+                caps_text = f"👾 -{response['tokens']} caps"
+                await message.answer(caps_text)
+
+        except Exception as e:
+            logger.error(f"Error processing /continue command: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось продолжить генерацию. Попробуйте еще раз.",
+                parse_mode="Markdown"
+            )
 
     @dp.message(F.text)
     async def handle_text_message(message: Message):
@@ -182,6 +244,11 @@ def create_handlers(
                         caps_text = f"👾 -{response['tokens']} caps"
                         await message.answer(caps_text)
 
+                        # Добавление подсказок о контексте
+                        if chat.context_remember and chat.context_counter > 0 and chat.context_counter % 2 == 0:
+                            context_hint = "Вы можете использовать /continue для продолжения или /reset для сброса контекста."
+                            await message.answer(context_hint)
+
                 except Exception as e:
                     logger.error(f"Error in chat session: {e}", exc_info=True)
                     await message.answer(
@@ -207,6 +274,11 @@ def create_handlers(
 
                     content = response.get("response", {}).get("content", "Извините, я не смог найти информацию")
                     await send_long_message(message, content)
+
+                    # Если есть счетчик капсов, добавляем его
+                    if "tokens" in response:
+                        caps_text = f"👾 -{response['tokens']} caps"
+                        await message.answer(caps_text)
 
                 except Exception as e:
                     logger.error(f"Error in web search: {e}", exc_info=True)
@@ -267,6 +339,11 @@ def create_handlers(
                             "❌ Извините, не удалось сгенерировать изображение",
                             parse_mode="Markdown"
                         )
+
+                    # Если есть счетчик капсов, добавляем его
+                    if "tokens" in response:
+                        caps_text = f"👾 -{response['tokens']} caps"
+                        await message.answer(caps_text)
 
                 except Exception as e:
                     logger.error(f"Error in image generation: {e}", exc_info=True)
@@ -335,11 +412,21 @@ def create_handlers(
                     content = response.get("response", {}).get("content", "Извините, произошла ошибка")
                     await send_long_message(message, content)
 
+                    # Если есть счетчик капсов, добавляем его
+                    if "tokens" in response:
+                        caps_text = f"👾 -{response['tokens']} caps"
+                        await message.answer(caps_text)
+
                 elif intent_type == IntentType.WEB_SEARCH:
                     await message.answer("🔍 Ищу информацию в интернете...", parse_mode="Markdown")
                     response = await web_search_usecase.search(user, chat, intent_data.get("query", transcribed_text))
                     content = response.get("response", {}).get("content", "Извините, я не смог найти информацию")
                     await send_long_message(message, content)
+
+                    # Если есть счетчик капсов, добавляем его
+                    if "tokens" in response:
+                        caps_text = f"👾 -{response['tokens']} caps"
+                        await message.answer(caps_text)
 
                 elif intent_type == IntentType.IMAGE_GENERATION:
                     await message.answer("🎨 Генерирую изображение...", parse_mode="Markdown")
@@ -356,6 +443,11 @@ def create_handlers(
 
                                 if url:
                                     await message.answer_photo(url)
+
+                                    # Если есть счетчик капсов, добавляем его
+                                    if "tokens" in response:
+                                        caps_text = f"👾 -{response['tokens']} caps"
+                                        await message.answer(caps_text)
                                 else:
                                     await message.answer("❌ Не удалось получить URL изображения", parse_mode="Markdown")
                     else:
@@ -431,6 +523,11 @@ def create_handlers(
 
                             if url:
                                 await message.answer_photo(url)
+
+                # Если есть счетчик капсов, добавляем его
+                if "tokens" in response:
+                    caps_text = f"👾 -{response['tokens']} caps"
+                    await message.answer(caps_text)
 
                 # Сохраняем обновленные данные
                 await user_repository.update(user)
@@ -508,6 +605,11 @@ def create_handlers(
 
                 content = response.get("response", {}).get("content", "Извините, не удалось обработать документ")
                 await send_long_message(message, content)
+
+                # Если есть счетчик капсов, добавляем его
+                if "tokens" in response:
+                    caps_text = f"👾 -{response['tokens']} caps"
+                    await message.answer(caps_text)
 
                 # Сохраняем обновленные данные
                 await user_repository.update(user)
