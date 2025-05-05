@@ -7,8 +7,7 @@ from src.config.settings import Settings
 from src.delivery.telegram.handlers import create_handlers
 from src.domain.service.intent_detection import IntentDetectionService
 from src.domain.usecase.chat_session import ChatSessionUseCase
-from src.domain.usecase.web_search import WebSearchUseCase
-from src.domain.usecase.image_generation import ImageGenerationUseCase
+from src.domain.usecase.account_connection import AccountConnectionUseCase
 from src.lib.clients.bothub_client import BothubClient
 from src.adapter.gateway.bothub_gateway import BothubGateway
 from src.adapter.repository.user_repository import UserRepository
@@ -16,7 +15,6 @@ from src.adapter.repository.chat_repository import ChatRepository
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 def create_bot(settings: Settings, user_repository=None, chat_repository=None) -> tuple[Bot, Dispatcher]:
     """Фабричный метод для создания бота и диспетчера"""
@@ -41,14 +39,12 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
 
     # Используем переданные репозитории или создаем пустые заглушки
     if user_repository is None:
-        # Здесь была ошибка: вместо MockUserRepository используем просто заглушку
         import os
         temp_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../data/temp.db')
         os.makedirs(os.path.dirname(temp_db_path), exist_ok=True)
         user_repository = UserRepository(temp_db_path)
 
     if chat_repository is None:
-        # Здесь была ошибка: вместо MockChatRepository используем просто заглушку
         import os
         temp_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../data/temp.db')
         os.makedirs(os.path.dirname(temp_db_path), exist_ok=True)
@@ -59,14 +55,12 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
 
     # Инициализация юзкейсов
     chat_session_usecase = ChatSessionUseCase(bothub_gateway)
-    web_search_usecase = WebSearchUseCase(bothub_gateway)
-    image_generation_usecase = ImageGenerationUseCase(bothub_gateway)
+    account_connection_usecase = AccountConnectionUseCase(bothub_gateway, settings)
 
     # Создание обработчиков
     handlers_dp = create_handlers(
         chat_session_usecase=chat_session_usecase,
-        web_search_usecase=web_search_usecase,
-        image_generation_usecase=image_generation_usecase,
+        account_connection_usecase=account_connection_usecase,  # Добавляем новый юзкейс
         intent_detection_service=intent_detection_service,
         user_repository=user_repository,
         chat_repository=chat_repository

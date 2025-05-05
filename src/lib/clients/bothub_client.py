@@ -1,12 +1,13 @@
-# Дополнение файла src/lib/clients/bothub_client.py
+# src/lib/clients/bothub_client.py
 
 import aiohttp
 import json
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from src.config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
 
 class BothubClient:
     """Клиент для взаимодействия с BotHub API"""
@@ -23,56 +24,79 @@ class BothubClient:
             headers: Dict[str, str] = None,
             data: Dict[str, Any] = None,
             as_json: bool = True,
-            timeout: int = 60
+            timeout: int = 30,
+            retry: int = 3
     ) -> Dict[str, Any]:
-        """Базовый метод для выполнения запросов к API"""
+        """Базовый метод для выполнения запросов к API с поддержкой повторных попыток"""
         url = f"{self.api_url}/api/{path}{self.request_query}"
         default_headers = {"Content-type": "application/json"} if as_json else {}
         headers = {**default_headers, **(headers or {})}
 
-        async with aiohttp.ClientSession() as session:
-            if method == "GET":
-                async with session.get(url, headers=headers, timeout=timeout) as response:
-                    if response.status >= 400:
-                        error_text = await response.text()
-                        raise Exception(f"Error {response.status}: {error_text}")
-                    return await response.json()
-            elif method == "POST":
-                async with session.post(
-                        url,
-                        headers=headers,
-                        json=data if as_json else None,
-                        data=data if not as_json else None,
-                        timeout=timeout
-                ) as response:
-                    if response.status >= 400:
-                        error_text = await response.text()
-                        raise Exception(f"Error {response.status}: {error_text}")
-                    return await response.json()
-            elif method == "PATCH":
-                async with session.patch(
-                        url,
-                        headers=headers,
-                        json=data if as_json else None,
-                        timeout=timeout
-                ) as response:
-                    if response.status >= 400:
-                        error_text = await response.text()
-                        raise Exception(f"Error {response.status}: {error_text}")
-                    return await response.json()
-            elif method == "PUT":
-                async with session.put(
-                        url,
-                        headers=headers,
-                        json=data if as_json else None,
-                        timeout=timeout
-                ) as response:
-                    if response.status >= 400:
-                        error_text = await response.text()
-                        raise Exception(f"Error {response.status}: {error_text}")
-                    return await response.json()
-            else:
-                raise ValueError(f"Unsupported method: {method}")
+        attempt = 0
+        last_error = None
+
+        while attempt < retry:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    if method == "GET":
+                        async with session.get(url, headers=headers, timeout=timeout) as response:
+                            if response.status >= 400:
+                                error_text = await response.text()
+                                if response.status == 502:
+                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                raise Exception(f"Error {response.status}: {error_text}")
+                            return await response.json()
+                    elif method == "POST":
+                        async with session.post(
+                                url,
+                                headers=headers,
+                                json=data if as_json else None,
+                                data=data if not as_json else None,
+                                timeout=timeout
+                        ) as response:
+                            if response.status >= 400:
+                                error_text = await response.text()
+                                if response.status == 502:
+                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                raise Exception(f"Error {response.status}: {error_text}")
+                            return await response.json()
+                    elif method == "PATCH":
+                        async with session.patch(
+                                url,
+                                headers=headers,
+                                json=data if as_json else None,
+                                timeout=timeout
+                        ) as response:
+                            if response.status >= 400:
+                                error_text = await response.text()
+                                if response.status == 502:
+                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                raise Exception(f"Error {response.status}: {error_text}")
+                            return await response.json()
+                    elif method == "PUT":
+                        async with session.put(
+                                url,
+                                headers=headers,
+                                json=data if as_json else None,
+                                timeout=timeout
+                        ) as response:
+                            if response.status >= 400:
+                                error_text = await response.text()
+                                if response.status == 502:
+                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                raise Exception(f"Error {response.status}: {error_text}")
+                            return await response.json()
+                    else:
+                        raise ValueError(f"Неподдерживаемый метод: {method}")
+            except Exception as e:
+                last_error = e
+                attempt += 1
+                if attempt >= retry:
+                    logger.error(f"Ошибка при выполнении запроса после {retry} попыток: {str(e)}")
+                    raise Exception(f"Ошибка API BotHub: {str(e)}")
+                logger.warning(f"Ошибка при выполнении запроса (попытка {attempt}/{retry}): {str(e)}")
+
+        raise last_error  # Этот код не должен выполняться, но на всякий случай
 
     async def authorize(
             self,
@@ -95,18 +119,25 @@ class BothubClient:
         try:
             return await self._make_request("v2/auth/telegram", "POST", headers, data)
         except Exception as e:
-            # Добавим логирование для отладки
-            logger.error(f"Authorization error: {str(e)}")
-            logger.error(f"Request data: {data}")
-            logger.error(f"Headers: {headers}")
-            raise Exception(f"BotHub авторизация не удалась. Проверьте BOTHUB_SECRET_KEY. Ошибка: {str(e)}")
+            logger.error(f"Ошибка авторизации: {str(e)}")
+            logger.error(f"Данные запроса: {data}")
+            logger.error(f"Заголовки: {headers}")
+            raise Exception(f"Ошибка авторизации BotHub: {str(e)}")
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
         """Получение информации о пользователе"""
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/auth/me", "GET", headers)
 
-    async def create_new_chat(self, access_token: str, group_id: str, name: str, model_id: Optional[str] = None) -> Dict[str, Any]:
+    async def create_new_group(self, access_token: str, name: str) -> Dict[str, Any]:
+        """Создание новой группы"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"name": name}
+        return await self._make_request("v2/group", "POST", headers, data)
+
+    async def create_new_chat(
+            self, access_token: str, group_id: str, name: str, model_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Создание нового чата"""
         data = {"name": name}
         if group_id:
@@ -114,91 +145,24 @@ class BothubClient:
         if model_id:
             data["modelId"] = model_id
 
-        logger.info(f"Creating chat with data: {data}")
+        logger.info(f"Создание чата с данными: {data}")
 
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/chat", "POST", headers, data)
 
-    async def get_web_search(self, access_token: str, chat_id: str) -> bool:
-        """Проверка статуса веб-поиска"""
+    async def list_models(self, access_token: str) -> List[Dict[str, Any]]:
+        """Получение списка моделей"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        return await self._make_request("v2/model/list", "GET", headers)
+
+    async def generate_telegram_connection_token(self, access_token: str) -> Dict[str, Any]:
+        """Генерация токена подключения Telegram к аккаунту"""
         headers = {"Authorization": f"Bearer {access_token}"}
         try:
-            response = await self._make_request(f"v2/chat/{chat_id}/settings", "GET", headers)
-            return response.get("text", {}).get("enable_web_search", False)
-        except Exception:
-            return False
-
-    async def enable_web_search(
-            self,
-            access_token: str,
-            chat_id: str,
-            value: bool
-    ) -> Dict[str, Any]:
-        """Включение/выключение веб-поиска"""
-        headers = {"Authorization": f"Bearer {access_token}"}
-        data = {"enable_web_search": value}
-        return await self._make_request(f"v2/chat/{chat_id}/settings", "PATCH", headers, data)
-
-    async def send_message(
-            self,
-            access_token: str,
-            chat_id: str,
-            message: str,
-            files: List[Any] = None
-    ) -> Dict[str, Any]:
-        """Отправка сообщения"""
-        headers = {"Authorization": f"Bearer {access_token}"}
-        data = {
-            "chatId": chat_id,
-            "message": message,
-            "stream": False
-        }
-
-        try:
-            response = await self._make_request("v2/message/send", "POST", headers, data, timeout=30)
-
-            # Формируем результат
-            result = {
-                "response": {
-                    "content": "Извините, не удалось получить ответ от сервера"
-                }
-            }
-
-            # Извлекаем содержимое ответа
-            if "content" in response:
-                result["response"]["content"] = response["content"]
-
-            # Обрабатываем вложения (изображения)
-            if "attachments" in response:
-                result["response"]["attachments"] = response["attachments"]
-
-            # Добавляем токены из транзакции
-            if "transaction" in response and "amount" in response["transaction"]:
-                result["tokens"] = int(response["transaction"]["amount"])
-
-            return result
+            return await self._make_request("v2/auth/telegram-connection-token", "GET", headers)
         except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            # Возвращаем понятную ошибку для обработки
-            return {
-                "response": {
-                    "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
-                }
-            }
-
-
-    async def list_models(self, access_token: str) -> Dict[str, Any]:
-        """Получение списка доступных моделей"""
-        headers = {"Authorization": f"Bearer {access_token}"}
-        models = await self._make_request("v2/model/list", "GET", headers)
-        logger.info(f"Available models: {[model.get('id') for model in models]}")
-        return models
-
-    async def create_new_group(self, access_token: str, name: str) -> Dict[str, Any]:
-        """Создание новой группы"""
-        headers = {"Authorization": f"Bearer {access_token}"}
-        data = {"name": name}
-        return await self._make_request("v2/group", "POST", headers, data)
+            logger.error(f"Ошибка при генерации токена подключения: {str(e)}")
+            raise Exception(f"Не удалось создать токен подключения: {str(e)}")
 
     async def save_chat_settings(
             self,
@@ -235,45 +199,55 @@ class BothubClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request(f"v2/chat/{chat_id}/clear-context", "PUT", headers)
 
-    async def update_chat_model(self, access_token: str, chat_id: str, model_id: str) -> Dict[str, Any]:
-        """Обновление модели чата"""
+    async def send_message(
+            self,
+            access_token: str,
+            chat_id: str,
+            message: str,
+            files: List[Any] = None
+    ) -> Dict[str, Any]:
+        """Отправка сообщения"""
         headers = {"Authorization": f"Bearer {access_token}"}
-        data = {"modelId": model_id}
-        return await self._make_request(f"v2/chat/{chat_id}", "PATCH", headers, data)
-
-    async def transcribe(self, access_token: str, file_path: str) -> dict:
-        """
-        Транскрибирует аудиофайл с помощью API Whisper
-
-        Args:
-            access_token: Токен доступа
-            file_path: Путь к аудиофайлу
-
-        Returns:
-            dict: Результат транскрибирования
-        """
-        headers = {
-            "Authorization": f"Bearer {access_token}"
+        data = {
+            "chatId": chat_id,
+            "message": message,
+            "stream": False
         }
 
-        async with aiohttp.ClientSession() as session:
-            with open(file_path, "rb") as audio_file:
-                form_data = aiohttp.FormData()
-                form_data.add_field(
-                    name="file",
-                    value=audio_file,
-                    filename=os.path.basename(file_path),
-                    content_type="audio/ogg"
-                )
-                form_data.add_field("model", "whisper-1")
+        try:
+            response = await self._make_request("v2/message/send", "POST", headers, data, timeout=60)
 
-                async with session.post(
-                        f"{self.api_url}/api/v2/openai/v1/audio/transcriptions{self.request_query}",
-                        headers=headers,
-                        data=form_data
-                ) as response:
-                    if response.status >= 400:
-                        text = await response.text()
-                        raise Exception(f"Error {response.status}: {text}")
+            result = {}
 
-                    return await response.json()
+            # Обрабатываем структуру ответа
+            if "content" in response:
+                result["response"] = {"content": response["content"]}
+            else:
+                result["response"] = {"content": "Извините, не удалось получить ответ от сервера"}
+
+            # Обрабатываем вложения
+            if "images" in response:
+                result["response"]["attachments"] = []
+                for image in response["images"]:
+                    if image.get("original") and image.get("original_id") and image.get("status") == "DONE":
+                        attachment = {
+                            "file": image["original"],
+                            "file_id": image["original_id"],
+                            "buttons": image.get("buttons", [])
+                        }
+                        result["response"]["attachments"].append(attachment)
+            elif "attachments" in response:
+                result["response"]["attachments"] = response["attachments"]
+
+            # Добавляем токены из транзакции
+            if "transaction" in response and "amount" in response["transaction"]:
+                result["tokens"] = int(response["transaction"]["amount"])
+
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения: {str(e)}")
+            return {
+                "response": {
+                    "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
+                }
+            }

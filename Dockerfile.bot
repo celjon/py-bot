@@ -6,4 +6,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY . /app/
 RUN pip3 install -r requirements.txt --break-system-packages
-CMD ["python3", "bot.py"]
+
+# Используем supervisor для запуска нескольких процессов
+RUN apt-get update && apt-get install -y supervisor && rm -rf /var/lib/apt/lists/*
+
+# Конфигурация supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+CMD ["/usr/bin/supervisord"]

@@ -1,3 +1,5 @@
+# src/config/settings.py
+
 import os
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
@@ -15,8 +17,10 @@ class Settings(BaseSettings):
     API_HASH: str
 
     # BotHub API
+    BOTHUB_WEBHOOK_SECRET_KEY: str
     BOTHUB_API_URL: str
     BOTHUB_SECRET_KEY: str
+    BOTHUB_WEB_URL: str = "https://bothub.chat"  # URL веб-интерфейса BotHub
 
     # Настройки приложения
     DEBUG: bool = False

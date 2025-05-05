@@ -1,7 +1,7 @@
+
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-
 
 @dataclass
 class User:
@@ -11,6 +11,7 @@ class User:
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     username: Optional[str] = None
+    email: Optional[str] = None  # Добавляем поле email
     language_code: Optional[str] = "en"
 
     # BotHub данные

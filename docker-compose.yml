@@ -25,7 +25,8 @@ services:
       - telegram-bot-api
     environment:
       - TELEGRAM_API_URL=http://telegram-bot-api:8081
-    command: python3 bot.py
+    ports:
+      - "8000:8000"  # Открываем порт для FastAPI
 
 volumes:
   telegram-data:

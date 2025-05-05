@@ -1,3 +1,5 @@
+# src/domain/usecase/chat_session.py
+
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
 from src.adapter.gateway.bothub_gateway import BothubGateway
@@ -5,7 +7,6 @@ from typing import Dict, Any, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 class ChatSessionUseCase:
     """Юзкейс для работы с чат-сессиями"""
@@ -27,22 +28,39 @@ class ChatSessionUseCase:
         Returns:
             Dict[str, Any]: Ответ от BotHub API
         """
-        logger.info(f"Sending message to chat {chat.bothub_chat_id} for user {user.id}")
-        return await self.gateway.send_message(user, chat, message, files)
+        logger.info(f"Отправка сообщения в чат {chat.bothub_chat_id} для пользователя {user.id}")
 
-    async def send_buffer(self, user: User, chat: Chat) -> Dict[str, Any]:
-        """
-        Отправка буфера сообщений
+        try:
+            return await self.gateway.send_message(user, chat, message, files)
+        except Exception as e:
+            # Если произошла ошибка связи с BotHub API, возвращаем заглушку
+            logger.error(f"Ошибка при отправке сообщения: {str(e)}")
+            error_message = str(e)
 
-        Args:
-            user: Пользователь
-            chat: Чат
-
-        Returns:
-            Dict[str, Any]: Ответ от BotHub API
-        """
-        logger.info(f"Sending buffer to chat {chat.bothub_chat_id} for user {user.id}")
-        return await self.gateway.send_buffer(user, chat)
+            if "NOT_ENOUGH_TOKENS" in error_message:
+                # Если недостаточно токенов, предлагаем привязать аккаунт
+                return {
+                    "response": {
+                        "content": "Извините, на данный момент в аккаунте недостаточно токенов для общения. "
+                                   "Пожалуйста, воспользуйтесь командой /link_account для привязки вашего "
+                                   "существующего аккаунта BotHub с токенами."
+                    }
+                }
+            elif "502 Bad Gateway" in error_message or "Сервер BotHub временно недоступен" in error_message:
+                # Если сервер недоступен, сообщаем о временных проблемах
+                return {
+                    "response": {
+                        "content": "Извините, в данный момент сервер BotHub недоступен. "
+                                   "Пожалуйста, попробуйте позже. Мы работаем над решением проблемы."
+                    }
+                }
+            else:
+                # Другие ошибки
+                return {
+                    "response": {
+                        "content": f"Извините, произошла ошибка при обработке запроса: {error_message}"
+                    }
+                }
 
     async def reset_context(self, user: User, chat: Chat) -> None:
         """
@@ -52,38 +70,5 @@ class ChatSessionUseCase:
             user: Пользователь
             chat: Чат
         """
-        logger.info(f"Resetting context for chat {chat.bothub_chat_id} for user {user.id}")
+        logger.info(f"Сброс контекста чата {chat.bothub_chat_id} для пользователя {user.id}")
         await self.gateway.reset_context(user, chat)
-
-    async def save_system_prompt(self, user: User, chat: Chat) -> None:
-        """
-        Сохранение системного промпта чата
-
-        Args:
-            user: Пользователь
-            chat: Чат
-        """
-        logger.info(f"Saving system prompt for chat {chat.bothub_chat_id} for user {user.id}")
-        await self.gateway.save_chat_settings(user, chat)
-
-    async def transcribe_voice(self, user: User, chat: Chat, file_url: str) -> str:
-        """
-        Транскрибирование голосового сообщения
-
-        Args:
-            user: Пользователь
-            chat: Чат
-            file_url: URL файла голосового сообщения
-
-        Returns:
-            str: Текст голосового сообщения
-        """
-        logger.info(f"Transcribing voice message for user {user.id}")
-
-        try:
-            # Реализация через BotHub API
-            return await self.gateway.transcribe_voice(user, chat, file_url)
-        except Exception as e:
-            logger.error(f"Error in voice transcription: {e}", exc_info=True)
-            # Если не удалось распознать, возвращаем сообщение об ошибке
-            return "Не удалось распознать голосовое сообщение"

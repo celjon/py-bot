@@ -25,6 +25,7 @@ class UserRepository:
                     first_name TEXT,
                     last_name TEXT,
                     username TEXT,
+                    email TEXT,
                     language_code TEXT,
                     bothub_id TEXT,
                     bothub_group_id TEXT,
@@ -48,6 +49,55 @@ class UserRepository:
             ''')
             await db.commit()
 
+    async def find_by_bothub_id(self, bothub_id: str) -> Optional[User]:
+        """Найти пользователя по bothub_id"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE bothub_id = ?",
+                (bothub_id,)
+            )
+            row = await cursor.fetchone()
+
+            if not row:
+                return None
+
+            # Десериализуем JSON поля
+            buffer = json.loads(row['buffer']) if row['buffer'] else {}
+            system_messages_to_delete = json.loads(row['system_messages_to_delete']) if row[
+                'system_messages_to_delete'] else []
+
+            # Десериализуем datetime
+            bothub_access_token_created_at = datetime.fromisoformat(row['bothub_access_token_created_at']) if row[
+                'bothub_access_token_created_at'] else None
+
+            return User(
+                id=row['id'],
+                telegram_id=row['telegram_id'],
+                first_name=row['first_name'],
+                last_name=row['last_name'],
+                username=row['username'],
+                email=row['email'],
+                language_code=row['language_code'],
+                bothub_id=row['bothub_id'],
+                bothub_group_id=row['bothub_group_id'],
+                bothub_access_token=row['bothub_access_token'],
+                bothub_access_token_created_at=bothub_access_token_created_at,
+                current_chat_index=row['current_chat_index'],
+                current_chat_list_page=row['current_chat_list_page'],
+                gpt_model=row['gpt_model'],
+                image_generation_model=row['image_generation_model'],
+                formula_to_image=bool(row['formula_to_image']),
+                links_parse=bool(row['links_parse']),
+                context_remember=bool(row['context_remember']),
+                answer_to_voice=bool(row['answer_to_voice']),
+                state=row['state'],
+                present_data=row['present_data'],
+                referral_code=row['referral_code'],
+                buffer=buffer,
+                system_messages_to_delete=system_messages_to_delete
+            )
+
     async def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
         """Найти пользователя по telegram_id"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -63,10 +113,12 @@ class UserRepository:
 
             # Десериализуем JSON поля
             buffer = json.loads(row['buffer']) if row['buffer'] else {}
-            system_messages_to_delete = json.loads(row['system_messages_to_delete']) if row['system_messages_to_delete'] else []
+            system_messages_to_delete = json.loads(row['system_messages_to_delete']) if row[
+                'system_messages_to_delete'] else []
 
             # Десериализуем datetime
-            bothub_access_token_created_at = datetime.fromisoformat(row['bothub_access_token_created_at']) if row['bothub_access_token_created_at'] else None
+            bothub_access_token_created_at = datetime.fromisoformat(row['bothub_access_token_created_at']) if row[
+                'bothub_access_token_created_at'] else None
 
             return User(
                 id=row['id'],
@@ -74,6 +126,7 @@ class UserRepository:
                 first_name=row['first_name'],
                 last_name=row['last_name'],
                 username=row['username'],
+                email=row['email'],  # Добавляем поле email
                 language_code=row['language_code'],
                 bothub_id=row['bothub_id'],
                 bothub_group_id=row['bothub_group_id'],
@@ -120,6 +173,7 @@ class UserRepository:
                 first_name=row['first_name'],
                 last_name=row['last_name'],
                 username=row['username'],
+                email=row['email'],
                 language_code=row['language_code'],
                 bothub_id=row['bothub_id'],
                 bothub_group_id=row['bothub_group_id'],
@@ -145,22 +199,23 @@ class UserRepository:
         async with aiosqlite.connect(self.db_path) as db:
             # Сериализуем JSON поля
             buffer = json.dumps(user.buffer) if user.buffer else None
-            system_messages_to_delete = json.dumps(user.system_messages_to_delete) if user.system_messages_to_delete else None
+            system_messages_to_delete = json.dumps(
+                user.system_messages_to_delete) if user.system_messages_to_delete else None
 
             # Сериализуем datetime
             bothub_access_token_created_at = user.bothub_access_token_created_at.isoformat() if user.bothub_access_token_created_at else None
 
             cursor = await db.execute('''
                 INSERT INTO users (
-                    telegram_id, first_name, last_name, username, language_code,
+                    telegram_id, first_name, last_name, username, email, language_code,
                     bothub_id, bothub_group_id, bothub_access_token, bothub_access_token_created_at,
                     current_chat_index, current_chat_list_page, gpt_model, image_generation_model,
                     formula_to_image, links_parse, context_remember, answer_to_voice,
                     state, present_data, referral_code, buffer, system_messages_to_delete,
                     registered_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                user.telegram_id, user.first_name, user.last_name, user.username, user.language_code,
+                user.telegram_id, user.first_name, user.last_name, user.username, user.email, user.language_code,
                 user.bothub_id, user.bothub_group_id, user.bothub_access_token, bothub_access_token_created_at,
                 user.current_chat_index, user.current_chat_list_page, user.gpt_model, user.image_generation_model,
                 int(user.formula_to_image), int(user.links_parse), int(user.context_remember),
@@ -176,7 +231,8 @@ class UserRepository:
         async with aiosqlite.connect(self.db_path) as db:
             # Сериализуем JSON поля
             buffer = json.dumps(user.buffer) if user.buffer else None
-            system_messages_to_delete = json.dumps(user.system_messages_to_delete) if user.system_messages_to_delete else None
+            system_messages_to_delete = json.dumps(
+                user.system_messages_to_delete) if user.system_messages_to_delete else None
 
             # Сериализуем datetime
             bothub_access_token_created_at = user.bothub_access_token_created_at.isoformat() if user.bothub_access_token_created_at else None
@@ -186,6 +242,7 @@ class UserRepository:
                     first_name = ?,
                     last_name = ?,
                     username = ?,
+                    email = ?,
                     language_code = ?,
                     bothub_id = ?,
                     bothub_group_id = ?,
@@ -206,7 +263,7 @@ class UserRepository:
                     system_messages_to_delete = ?
                 WHERE id = ?
             ''', (
-                user.first_name, user.last_name, user.username, user.language_code,
+                user.first_name, user.last_name, user.username, user.email, user.language_code,
                 user.bothub_id, user.bothub_group_id, user.bothub_access_token, bothub_access_token_created_at,
                 user.current_chat_index, user.current_chat_list_page, user.gpt_model, user.image_generation_model,
                 int(user.formula_to_image), int(user.links_parse), int(user.context_remember),
