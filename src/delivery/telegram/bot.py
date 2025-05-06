@@ -4,7 +4,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.client.default import DefaultBotProperties
 from src.config.settings import Settings
-from src.delivery.telegram.handlers import create_handlers
+from src.delivery.telegram.handlers import setup_handlers
 from src.domain.service.intent_detection import IntentDetectionService
 from src.domain.usecase.chat_session import ChatSessionUseCase
 from src.domain.usecase.account_connection import AccountConnectionUseCase
@@ -57,14 +57,14 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     chat_session_usecase = ChatSessionUseCase(bothub_gateway)
     account_connection_usecase = AccountConnectionUseCase(bothub_gateway, settings)
 
-    # Создание обработчиков
+    # Настройка обработчиков
     try:
-        handlers_router = create_handlers(
-        chat_session_usecase=chat_session_usecase,
-        account_connection_usecase=account_connection_usecase,
-        intent_detection_service=intent_detection_service,
-        user_repository=user_repository,
-        chat_repository=chat_repository
+        handlers_router = setup_handlers(
+            chat_session_usecase=chat_session_usecase,
+            account_connection_usecase=account_connection_usecase,
+            intent_detection_service=intent_detection_service,
+            user_repository=user_repository,
+            chat_repository=chat_repository
         )
         logger.info(f"Created handler router: {handlers_router}")
         dp.include_router(handlers_router)
