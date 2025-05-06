@@ -199,6 +199,43 @@ class BothubClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request(f"v2/chat/{chat_id}/clear-context", "PUT", headers)
 
+    async def get_web_search(self, access_token: str, chat_id: str) -> bool:
+        """
+        Получение статуса веб-поиска для чата
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+
+        Returns:
+            bool: Включен ли веб-поиск
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        try:
+            response = await self._make_request(f"v2/chat/{chat_id}/settings", "GET", headers)
+            if "text" not in response:
+                return False
+            return response["text"].get("enable_web_search", False)
+        except Exception as e:
+            logger.error(f"Ошибка при получении статуса веб-поиска: {str(e)}")
+            return False
+
+    async def enable_web_search(self, access_token: str, chat_id: str, enabled: bool) -> Dict[str, Any]:
+        """
+        Включение/выключение веб-поиска
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+            enabled: Включить или выключить
+
+        Returns:
+            Dict[str, Any]: Ответ от API
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"enable_web_search": enabled}
+        return await self._make_request(f"v2/chat/{chat_id}/settings", "PATCH", headers, data)
+
     async def send_message(
             self,
             access_token: str,

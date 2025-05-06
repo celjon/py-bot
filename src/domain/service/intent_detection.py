@@ -1,4 +1,4 @@
-# Дополнение файла src/domain/service/intent_detection.py
+# src/domain/service/intent_detection.py
 
 import re
 from enum import Enum

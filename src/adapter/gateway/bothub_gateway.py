@@ -215,6 +215,44 @@ class BothubGateway:
         await self.client.reset_context(access_token, chat.bothub_chat_id)
         chat.reset_context_counter()
 
+    async def get_web_search(self, user: User, chat: Chat) -> bool:
+        """
+        Получение статуса веб-поиска
+
+        Args:
+            user: Пользователь
+            chat: Чат
+
+        Returns:
+            bool: Включен ли веб-поиск
+        """
+        if not chat.bothub_chat_id:
+            return False
+
+        try:
+            access_token = await self.get_access_token(user)
+            response = await self.client.get_web_search(access_token, chat.bothub_chat_id)
+            return response
+        except Exception as e:
+            logger.error(f"Ошибка при получении статуса веб-поиска: {e}", exc_info=True)
+            return False
+
+    async def enable_web_search(self, user: User, chat: Chat, enabled: bool) -> None:
+        """
+        Включение/выключение веб-поиска
+
+        Args:
+            user: Пользователь
+            chat: Чат
+            enabled: Включить или выключить
+        """
+        if not chat.bothub_chat_id:
+            await self.create_new_chat(user, chat)
+
+        access_token = await self.get_access_token(user)
+        await self.client.enable_web_search(access_token, chat.bothub_chat_id, enabled)
+
+
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[
         str, Any]:
         """
