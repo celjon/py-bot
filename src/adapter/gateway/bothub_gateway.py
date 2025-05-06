@@ -104,59 +104,65 @@ class BothubGateway:
                     model_id
                 )
             else:
-                # Пробуем каждую модель из списка доступных, пока не найдем работающую
-                model_id = None
-                response = None
-                last_error = None
+                # Получаем список доступных моделей
+                models = await self.client.list_models(access_token)
 
-                # Проверяем, есть ли у пользователя предпочтительная модель
-                if user.gpt_model:
-                    try:
-                        # Сначала пробуем модель пользователя
-                        logger.info(f"Пробуем создать чат с предпочтительной моделью пользователя: {user.gpt_model}")
-                        response = await self.client.create_new_chat(
-                            access_token,
-                            user.bothub_group_id,
-                            name,
-                            user.gpt_model
-                        )
-                        model_id = user.gpt_model
-                    except Exception as e:
-                        logger.warning(f"Не удалось создать чат с моделью {user.gpt_model}: {e}")
-                        last_error = e
+                # Находим модель по умолчанию или первую доступную текстовую модель
+                default_model = None
+                first_allowed_model = None
 
-                # Если не получилось с моделью пользователя, пробуем доступные модели
-                if response is None:
-                    for model in self.AVAILABLE_MODELS:
-                        try:
-                            logger.info(f"Пробуем создать чат с моделью {model}")
-                            response = await self.client.create_new_chat(
-                                access_token,
-                                user.bothub_group_id,
-                                name,
-                                model
-                            )
-                            model_id = model
-                            # Сохраняем новую модель как предпочтительную для пользователя
-                            user.gpt_model = model
+                for model in models:
+                    # Проверяем, является ли модель текстовой
+                    is_text_model = "TEXT_TO_TEXT" in model.get("features", [])
+                    is_allowed = model.get("is_allowed", False)
+
+                    if is_text_model and is_allowed:
+                        # Приоритет - модель по умолчанию
+                        if model.get("is_default", False):
+                            default_model = model
                             break
-                        except Exception as e:
-                            logger.warning(f"Не удалось создать чат с моделью {model}: {e}")
-                            last_error = e
 
-                # Если ни одна модель не подошла, пробуем создать чат без указания модели
-                if response is None:
-                    try:
-                        logger.info("Пробуем создать чат без указания модели")
-                        response = await self.client.create_new_chat(
+                        # Если еще не нашли разрешенную модель, сохраняем первую
+                        if first_allowed_model is None:
+                            first_allowed_model = model
+
+                # Используем модель по умолчанию, если есть, иначе первую разрешенную
+                model_data = default_model or first_allowed_model
+
+                if model_data is None:
+                    # Если не нашли ни одной подходящей модели, пробуем создать чат без указания модели
+                    logger.warning("Не найдено подходящих моделей, создаем чат без указания модели")
+                    response = await self.client.create_new_chat(
+                        access_token,
+                        user.bothub_group_id,
+                        name
+                    )
+                    model_id = None
+                else:
+                    model_id = model_data.get("id")
+                    logger.info(f"Выбрана модель {model_id} для создания чата")
+
+                    # Если у модели есть parent_id, используем его для создания чата
+                    parent_id = model_data.get("parent_id")
+
+                    response = await self.client.create_new_chat(
+                        access_token,
+                        user.bothub_group_id,
+                        name,
+                        parent_id or model_id
+                    )
+
+                    # Если нужно, сохраняем модель в настройках чата
+                    if parent_id and model_id != parent_id:
+                        await self.client.save_chat_settings(
                             access_token,
-                            user.bothub_group_id,
-                            name
+                            response["id"],
+                            model_id
                         )
-                    except Exception as e:
-                        # Если все попытки не удались, выбрасываем последнюю ошибку
-                        logger.error(f"Не удалось создать чат ни с одной моделью: {e}")
-                        raise last_error or e
+
+                    # Сохраняем модель как предпочтительную для пользователя
+                    if model_id:
+                        user.gpt_model = model_id
 
             # Обновляем данные чата
             chat.bothub_chat_id = response["id"]
@@ -193,6 +199,7 @@ class BothubGateway:
                 await self.create_new_chat(user, chat, is_image_generation)
             else:
                 raise
+
 
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[
         str, Any]:

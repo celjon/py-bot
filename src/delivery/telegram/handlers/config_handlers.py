@@ -22,27 +22,38 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
 
             logger.info(f"Пользователь {user.id} запросил настройку GPT моделей")
 
-            # В реальном коде здесь будет вызов model_selection_usecase
-            # Для демонстрации создадим заглушку со списком моделей
-            models = [
-                {
-                    "id": "gpt-3.5-turbo",
-                    "label": "GPT-3.5 Turbo",
-                    "features": ["TEXT_TO_TEXT"],
-                    "is_allowed": True
-                },
-                {
-                    "id": "gpt-4",
-                    "label": "GPT-4",
-                    "features": ["TEXT_TO_TEXT"],
-                    "is_allowed": True
-                }
+            # Получаем токен доступа пользователя через BothubGateway
+            from src.adapter.gateway.bothub_gateway import BothubGateway
+            from src.lib.clients.bothub_client import BothubClient
+            from src.config.settings import get_settings
+
+            settings = get_settings()
+            bothub_client = BothubClient(settings)
+            bothub_gateway = BothubGateway(bothub_client)
+
+            # Получаем список моделей от сервера
+            access_token = await bothub_gateway.get_access_token(user)
+            models_response = await bothub_client.list_models(access_token)
+
+            # Фильтруем только текстовые модели
+            text_models = [
+                model for model in models_response
+                if "TEXT_TO_TEXT" in model.get("features", [])
             ]
+
+            # Если нет моделей, сообщаем об ошибке
+            if not text_models:
+                await message.answer(
+                    "⚠️ Не удалось получить список доступных моделей. Попробуйте позже.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+                return
 
             await message.answer(
                 "Выберите модель для текстовой генерации:",
                 parse_mode="Markdown",
-                reply_markup=get_chat_model_inline_keyboard(models, chat.bothub_chat_model)
+                reply_markup=get_chat_model_inline_keyboard(text_models, chat.bothub_chat_model)
             )
 
         except Exception as e:
@@ -58,14 +69,18 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
         """Обработка команды /gptconfig (без подчеркивания) для обратной совместимости"""
         await handle_gpt_config_command(message)
 
+
     # Обработчик для callback-запросов от инлайн клавиатуры выбора модели
-    @router.callback_query(lambda c: c.data and "select_chat_model" in c.data)
+    # src/delivery/telegram/handlers/config_handlers.py
+
+    # Обработчик для callback-запросов от инлайн клавиатуры выбора модели
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("t") == "m")
     async def handle_model_selection(callback: CallbackQuery):
         try:
             # Парсим данные callback
             data = json.loads(callback.data)
-            model_id = data.get("model_id")
-            is_allowed = data.get("allowed", False)
+            model_id = data.get("m")  # m = model_id
+            is_allowed = data.get("a") == 1  # a = allowed (1 = True, 0 = False)
 
             if not is_allowed:
                 await callback.answer("Эта модель недоступна")
@@ -83,7 +98,7 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
             await chat_repository.update(chat)
 
             # Закрываем инлайн клавиатуру
-            await callback.message.delete_reply_markup()
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer(f"Модель {model_id} выбрана")
 
             # Отправляем уведомление о выборе модели
@@ -99,12 +114,12 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
             logger.error(f"Ошибка при выборе модели: {e}", exc_info=True)
             await callback.answer("Произошла ошибка при выборе модели")
 
-    # Обработчик для отмены операции (кнопка "Отмена")
-    @router.callback_query(lambda c: c.data and json.loads(c.data).get("action") == "cancel")
+    # Обработчик для кнопки отмены
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("t") == "c")
     async def handle_cancel_callback(callback: CallbackQuery):
         try:
             # Закрываем инлайн клавиатуру
-            await callback.message.delete_reply_markup()
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer("Операция отменена")
 
             # Получаем пользователя и чат

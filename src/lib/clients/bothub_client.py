@@ -153,7 +153,12 @@ class BothubClient:
     async def list_models(self, access_token: str) -> List[Dict[str, Any]]:
         """Получение списка моделей"""
         headers = {"Authorization": f"Bearer {access_token}"}
-        return await self._make_request("v2/model/list", "GET", headers)
+        try:
+            response = await self._make_request("v2/model/list", "GET", headers)
+            return response
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка моделей: {str(e)}")
+            return []
 
     async def generate_telegram_connection_token(self, access_token: str) -> Dict[str, Any]:
         """Генерация токена подключения Telegram к аккаунту"""
