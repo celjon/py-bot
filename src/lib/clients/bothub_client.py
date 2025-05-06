@@ -288,3 +288,24 @@ class BothubClient:
                     "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
                 }
             }
+
+    async def save_system_prompt(self, access_token: str, chat_id: str, system_prompt: str) -> Dict[str, Any]:
+        """
+        Сохранение системного промпта для чата
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+            system_prompt: Текст системного промпта
+
+        Returns:
+            Dict[str, Any]: Ответ от API
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"system_prompt": system_prompt}
+
+        try:
+            return await self._make_request(f"v2/chat/{chat_id}/settings", "PATCH", headers, data)
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении системного промпта: {str(e)}")
+            raise Exception(f"Не удалось сохранить системный промпт: {str(e)}")

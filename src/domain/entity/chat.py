@@ -1,3 +1,5 @@
+# src/domain/entity/chat.py
+
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 

@@ -1,3 +1,5 @@
+# src/adapter/repository/chat_repository.py
+
 import aiosqlite
 import json
 from typing import Optional, List

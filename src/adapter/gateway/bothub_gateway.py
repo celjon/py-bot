@@ -297,3 +297,26 @@ class BothubGateway:
                     files
                 )
             raise
+
+    async def save_system_prompt(self, user: User, chat: Chat) -> None:
+        """
+        Сохранение системного промпта для чата
+
+        Args:
+            user: Пользователь
+            chat: Чат
+        """
+        if not chat.bothub_chat_id:
+            await self.create_new_chat(user, chat)
+            return
+
+        # Проверяем, что модель поддерживает системные промпты
+        # Обычно это GPT модели
+        if not chat.bothub_chat_model or "gpt" not in chat.bothub_chat_model.lower():
+            return
+
+        # Получаем токен доступа
+        access_token = await self.get_access_token(user)
+
+        # Сохраняем системный промпт через API
+        await self.client.save_system_prompt(access_token, chat.bothub_chat_id, chat.system_prompt)
