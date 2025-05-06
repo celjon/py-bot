@@ -1,0 +1,96 @@
+# Добавление в src/delivery/telegram/handlers/context_handlers.py
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
+import json
+import logging
+from ..keyboards.inline_keyboards import get_context_inline_keyboard
+from ..keyboards.main_keyboard import get_main_keyboard
+from .base_handlers import get_or_create_user, get_or_create_chat
+
+logger = logging.getLogger(__name__)
+
+
+def register_context_handlers(router: Router, chat_service, user_repository, chat_repository):
+    """Регистрация обработчиков для управления контекстом"""
+
+    @router.message(Command("context"))
+    async def handle_context_command(message: Message):
+        """Обработка команды /context для настройки контекста"""
+        try:
+            user = await get_or_create_user(message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            await message.answer(
+                "Должен ли бот запоминать контекст чатов?",
+                parse_mode="Markdown",
+                reply_markup=get_context_inline_keyboard(chat.context_remember)
+            )
+
+            logger.info(f"Пользователь {user.id} запросил настройку контекста")
+
+        except Exception as e:
+            logger.error(f"Ошибка при обработке команды context: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось обработать команду. Попробуйте позже.",
+                parse_mode="Markdown"
+            )
+
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("a") == "context_on")
+    async def handle_context_on(callback: CallbackQuery):
+        """Обработка включения контекста"""
+        try:
+            user = await get_or_create_user(callback.message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            # Включаем запоминание контекста
+            chat.context_remember = True
+            await chat_repository.update(chat)
+
+            # Закрываем инлайн клавиатуру
+            await callback.message.delete_reply_markup()
+            await callback.answer("Запоминание контекста включено")
+
+            # Отправляем сообщение
+            await callback.message.answer(
+                "✅ Запоминание контекста включено. Начните новый чат с помощью команды /reset, "
+                "чтобы изменения вступили в силу.",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
+            )
+
+            logger.info(f"Пользователь {user.id} включил запоминание контекста")
+
+        except Exception as e:
+            logger.error(f"Ошибка при включении контекста: {e}", exc_info=True)
+            await callback.answer("Произошла ошибка при включении контекста")
+
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("a") == "context_off")
+    async def handle_context_off(callback: CallbackQuery):
+        """Обработка выключения контекста"""
+        try:
+            user = await get_or_create_user(callback.message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            # Выключаем запоминание контекста
+            chat.context_remember = False
+            chat.reset_context_counter()
+            await chat_repository.update(chat)
+
+            # Закрываем инлайн клавиатуру
+            await callback.message.delete_reply_markup()
+            await callback.answer("Запоминание контекста выключено")
+
+            # Отправляем сообщение
+            await callback.message.answer(
+                "✅ Запоминание контекста выключено. Начните новый чат с помощью команды /reset, "
+                "чтобы изменения вступили в силу.",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
+            )
+
+            logger.info(f"Пользователь {user.id} выключил запоминание контекста")
+
+        except Exception as e:
+            logger.error(f"Ошибка при выключении контекста: {e}", exc_info=True)
+            await callback.answer("Произошла ошибка при выключении контекста")

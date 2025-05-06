@@ -34,10 +34,15 @@ def register_account_handlers(router: Router, account_connection_usecase, user_r
 
                 link = "https://example.com/link_demo"  # Демо-ссылка
 
-                # Отправляем сообщение с ссылкой
+                # Правильное экранирование специальных символов
+                escaped_link = link.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("]", "\\]")
+
+                # Отправляем сообщение с правильно отформатированной ссылкой
+                message_text = f"Для привязки вашего Telegram к существующему аккаунту BotHub, перейдите по ссылке:\n\n[Привязать аккаунт]({escaped_link})\n\nПосле привязки вы сможете использовать ваши токены из аккаунта BotHub."
+
                 await message.answer(
-                    f"Для привязки вашего Telegram к существующему аккаунту BotHub, перейдите по ссылке:\n\n{link}\n\n"
-                    f"После привязки вы сможете использовать ваши токены из аккаунта BotHub.",
+                    message_text,
+                    parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
@@ -46,12 +51,7 @@ def register_account_handlers(router: Router, account_connection_usecase, user_r
             except Exception as link_error:
                 logger.error(f"Ошибка при генерации ссылки: {link_error}", exc_info=True)
                 await message.answer(
-                    f"Не удалось сгенерировать ссылку для привязки. \n\n"
-                    f"Вы можете вручную привязать аккаунт:\n"
-                    f"1) Войдите в аккаунт на сайте bothub.chat\n"
-                    f"2) Перейдите в настройки профиля\n"
-                    f"3) Найдите раздел 'Подключенные аккаунты'\n"
-                    f"4) Добавьте Telegram и следуйте инструкциям",
+                    "Не удалось сгенерировать ссылку для привязки.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )

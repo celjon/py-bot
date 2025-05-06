@@ -20,16 +20,17 @@ def get_chat_model_inline_keyboard(models: List[Dict], current_model: Optional[s
         if not is_allowed:
             text += " 🔒"
 
+        # Сокращаем размер данных callback
         callback_data = json.dumps({
-            "action": "select_chat_model",
-            "model_id": model.get("id"),
-            "allowed": is_allowed
+            "a": "model",  # action -> a
+            "id": model.get("id")[:20],  # ограничиваем длину ID
+            "ok": is_allowed  # allowed -> ok
         })
 
         buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
     # Добавляем кнопку отмены
-    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=json.dumps({"action": "cancel"}))])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=json.dumps({"a": "cancel"}))])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

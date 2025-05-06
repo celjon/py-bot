@@ -241,9 +241,9 @@ class BothubClient:
             access_token: str,
             chat_id: str,
             message: str,
-            files: List[Any] = None
+            files: List[str] = None
     ) -> Dict[str, Any]:
-        """Отправка сообщения"""
+        """Отправка сообщения в BotHub API"""
         headers = {"Authorization": f"Bearer {access_token}"}
         data = {
             "chatId": chat_id,
@@ -254,16 +254,16 @@ class BothubClient:
         try:
             response = await self._make_request("v2/message/send", "POST", headers, data, timeout=60)
 
-            result = {}
+            result = {"response": {}}
 
-            # Обрабатываем структуру ответа
+            # Обрабатываем контент
             if "content" in response:
-                result["response"] = {"content": response["content"]}
+                result["response"]["content"] = response["content"]
             else:
-                result["response"] = {"content": "Извините, не удалось получить ответ от сервера"}
+                result["response"]["content"] = "Извините, не удалось получить ответ от сервера"
 
             # Обрабатываем вложения
-            if "images" in response:
+            if "images" in response and response["images"]:
                 result["response"]["attachments"] = []
                 for image in response["images"]:
                     if image.get("original") and image.get("original_id") and image.get("status") == "DONE":
@@ -309,3 +309,31 @@ class BothubClient:
         except Exception as e:
             logger.error(f"Ошибка при сохранении системного промпта: {str(e)}")
             raise Exception(f"Не удалось сохранить системный промпт: {str(e)}")
+
+    async def create_referral_program(self, access_token: str, template_id: str) -> Dict[str, Any]:
+        """Создание реферальной программы"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        return await self._make_request("v2/referral", "POST", headers, {"templateId": template_id})
+
+    async def whisper(self, access_token: str, file_path: str, method: str = "transcriptions") -> str:
+        """Преобразование аудио в текст (транскрибирование)"""
+        # Реализация загрузки файла для запроса
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field('model', 'whisper-1')
+            form.add_field('file', open(file_path, 'rb'))
+
+            headers = {"Authorization": f"Bearer {access_token}"}
+            async with session.post(
+                    f"{self.api_url}/api/v2/openai/v1/audio/{method}{self.request_query}",
+                    headers=headers,
+                    data=form
+            ) as response:
+                if response.status >= 400:
+                    raise Exception(f"Ошибка при транскрибировании: {await response.text()}")
+
+                result = await response.json()
+                if "text" not in result:
+                    raise Exception("Ошибка при получении текста из аудио")
+
+                return result["text"]

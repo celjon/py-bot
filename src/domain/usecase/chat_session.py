@@ -1,5 +1,4 @@
 # src/domain/usecase/chat_session.py
-
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
 from src.adapter.gateway.bothub_gateway import BothubGateway
@@ -8,11 +7,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class ChatSessionUseCase:
     """Юзкейс для работы с чат-сессиями"""
 
     def __init__(self, gateway: BothubGateway):
         self.gateway = gateway
+
+    async def create_new_chat(self, user: User, chat: Chat, is_image_generation: bool = False) -> None:
+        """
+        Создание нового чата
+
+        Args:
+            user: Пользователь
+            chat: Чат
+            is_image_generation: Флаг для чата с генерацией изображений
+        """
+        logger.info(f"Создание нового чата для пользователя {user.id}")
+        await self.gateway.create_new_chat(user, chat, is_image_generation)
 
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[
         str, Any]:
@@ -23,7 +35,7 @@ class ChatSessionUseCase:
             user: Пользователь
             chat: Чат
             message: Текст сообщения
-            files: Список URL файлов
+            files: Список файлов (опционально)
 
         Returns:
             Dict[str, Any]: Ответ от BotHub API
@@ -31,9 +43,9 @@ class ChatSessionUseCase:
         logger.info(f"Отправка сообщения в чат {chat.bothub_chat_id} для пользователя {user.id}")
 
         try:
+            # Получаем доступ к BotHub API через gateway
             return await self.gateway.send_message(user, chat, message, files)
         except Exception as e:
-            # Если произошла ошибка связи с BotHub API, возвращаем заглушку
             logger.error(f"Ошибка при отправке сообщения: {str(e)}")
             error_message = str(e)
 
@@ -46,7 +58,7 @@ class ChatSessionUseCase:
                                    "существующего аккаунта BotHub с токенами."
                     }
                 }
-            elif "502 Bad Gateway" in error_message or "Сервер BotHub временно недоступен" in error_message:
+            elif "502 Bad Gateway" in error_message:
                 # Если сервер недоступен, сообщаем о временных проблемах
                 return {
                     "response": {
@@ -72,3 +84,4 @@ class ChatSessionUseCase:
         """
         logger.info(f"Сброс контекста чата {chat.bothub_chat_id} для пользователя {user.id}")
         await self.gateway.reset_context(user, chat)
+        chat.reset_context_counter()

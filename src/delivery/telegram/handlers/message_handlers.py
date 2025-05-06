@@ -1,7 +1,13 @@
+# src/delivery/telegram/handlers/message_handlers.py
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums.chat_action import ChatAction
 import logging
+import os
+import asyncio
+import re
+from typing import List, Dict, Any, Optional, Tuple
+
 from ..keyboards.main_keyboard import get_main_keyboard
 from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message
 
@@ -14,11 +20,14 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
 
     @router.message(F.text)
     async def handle_text_message(message: Message):
-        """Обработка текстовых сообщений с умным определением намерения"""
+        """Обработка текстовых сообщений"""
         try:
             # Получаем или создаём пользователя и его текущий чат
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
+
+            # Получаем бота из сообщения
+            bot = message.bot
 
             # Проверяем, находится ли пользователь в каком-то состоянии
             if user.state == "waiting_for_chat_name":
@@ -106,22 +115,46 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                     return
 
             # Сообщаем пользователю, что бот печатает
-            await message.chat.do(ChatAction.TYPING)
+            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
-            # Определяем намерение пользователя
-            # В данной демо-версии просто эхо
+            # Определяем намерение пользователя (чат, поиск, генерация изображений)
+            # В этой базовой версии всегда используем чат
+            intent_type = "chat"
+            intent_data = {"message": message.text}
+
             logger.info(f"Пользователь {user.id} отправил сообщение: {message.text}")
+            logger.info(f"Определено намерение: {intent_type}")
 
-            # В финальной версии здесь будет использован intent_detection_service
-            # и chat_session_usecase, но пока просто отвечаем эхом
+            # Обрабатываем ссылки в тексте, если включен парсинг ссылок
+            text = message.text
+            if chat.links_parse:
+                # В полной версии здесь будет парсинг ссылок
+                # text = await links_parser.parse_urls(text)
+                pass
 
             try:
-                # Имитация ответа от BotHub
-                result = {"response": {
-                    "content": f"Вы написали: {message.text}\n\nЭто демо-версия бота, полный функционал будет реализован позже."}}
+                # Отправляем запрос в BotHub API
+                # Проверяем, есть ли у чата ID в BotHub
+                if not chat.bothub_chat_id:
+                    # Создаем новый чат
+                    await chat_session_usecase.create_new_chat(user, chat)
+
+                # Отправляем сообщение и получаем ответ
+                result = await chat_session_usecase.send_message(user, chat, text)
+
+                # Если контекст запоминается, увеличиваем счетчик контекста
+                if chat.context_remember:
+                    chat.increment_context_counter()
+                    await chat_repository.update(chat)
 
                 if "response" in result and "content" in result["response"]:
                     content = result["response"]["content"]
+
+                    # Проверяем наличие формул и конвертируем их в изображения, если включено
+                    if chat.formula_to_image:
+                        # В полной версии здесь будет конвертация формул
+                        # content = await formula_service.format_formulas(content)
+                        pass
 
                     # Если сообщение слишком длинное, разбиваем его
                     if len(content) > 4000:
@@ -132,16 +165,51 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                             parse_mode="Markdown",
                             reply_markup=get_main_keyboard(user, chat)
                         )
-                else:
+
+                    # Если есть информация о токенах, отправляем её
+                    if "tokens" in result:
+                        tokens_info = f"`-{result['tokens']} caps`"
+
+                        # Добавляем информацию о контексте, если он включен
+                        if chat.context_remember:
+                            tokens_info += f"\n\nПродолжить: /continue\n\nСбросить контекст: /reset"
+
+                        await message.answer(
+                            tokens_info,
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+
+                    # Если есть вложения (например, изображения), отправляем их
+                    if "attachments" in result["response"] and result["response"]["attachments"]:
+                        for attachment in result["response"]["attachments"]:
+                            if "file" in attachment and attachment["file"].get("type") == "IMAGE":
+                                url = attachment["file"].get("url", "")
+                                if not url and "path" in attachment["file"]:
+                                    url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
+
+                                if url:
+                                    await message.answer_photo(
+                                        url,
+                                        caption=None,
+                                        reply_markup=get_main_keyboard(user, chat)
+                                    )
+
+                # Если количество сообщений в контексте достигло кратного 10 значения,
+                # напоминаем пользователю о возможности сбросить контекст
+                if chat.context_remember and chat.context_counter > 0 and chat.context_counter % 10 == 0:
                     await message.answer(
-                        "Не удалось получить ответ от сервера.",
+                        "Совет: Если ваш диалог продолжается уже достаточно долго, для учета всего накопленного "
+                        "контекста расходуется больше caps. Чтобы избежать лишних затрат, рекомендуем регулярно "
+                        "начинать новый чат с помощью команды /reset.",
                         parse_mode="Markdown",
                         reply_markup=get_main_keyboard(user, chat)
                     )
-            except Exception as e:
-                logger.error(f"Ошибка при отправке сообщения: {e}", exc_info=True)
+
+            except Exception as api_error:
+                logger.error(f"Ошибка при отправке запроса в BotHub API: {api_error}", exc_info=True)
                 await message.answer(
-                    f"❌ Ошибка при обработке сообщения: {str(e)}",
+                    f"❌ Произошла ошибка при обработке запроса: {str(api_error)}",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
@@ -167,3 +235,61 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
 
         except Exception as e:
             logger.error(f"Ошибка при обработке любого сообщения: {e}", exc_info=True)
+
+    @router.message(F.voice)
+    async def handle_voice_message(message: Message):
+        """Обработка голосовых сообщений"""
+        try:
+            # Получаем или создаём пользователя и его текущий чат
+            user = await get_or_create_user(message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            # Получаем бота из сообщения
+            bot = message.bot
+
+            # Сообщаем пользователю, что бот обрабатывает голосовое сообщение
+            processing_msg = await message.answer(
+                "🎤 Обрабатываю голосовое сообщение...",
+                parse_mode="Markdown"
+            )
+
+            # Получаем информацию о файле
+            file = await bot.get_file(message.voice.file_id)
+            file_path = file.file_path
+
+            # Скачиваем файл
+            downloaded_file = await bot.download_file(file_path)
+
+            # Сохраняем во временный файл
+            temp_file = f"/tmp/voice_{message.voice.file_id}.ogg"
+            with open(temp_file, "wb") as f:
+                f.write(downloaded_file.read())
+
+            # Транскрибируем голосовое сообщение
+            # В полной версии будет:
+            # transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file)
+
+            # Временная реализация:
+            transcribed_text = "Текст из голосового сообщения (демо)"
+
+            # Удаляем сообщение о обработке
+            await bot.delete_message(message.chat.id, processing_msg.message_id)
+
+            # Отправляем текст транскрибирования
+            await message.answer(
+                f"🔊 → 📝 Текст из голосового сообщения:\n\n{transcribed_text}",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
+            )
+
+            # В полной версии здесь будет отправка транскрибированного текста в BotHub
+
+            # Удаляем временный файл
+            os.remove(temp_file)
+
+        except Exception as e:
+            logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+            await message.answer(
+                "❌ Произошла ошибка при обработке голосового сообщения.",
+                parse_mode="Markdown"
+            )

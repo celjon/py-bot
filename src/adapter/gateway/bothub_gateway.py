@@ -1,5 +1,4 @@
 # src/adapter/gateway/bothub_gateway.py
-
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import logging
@@ -54,33 +53,20 @@ class BothubGateway:
             if "groups" in response["user"] and response["user"]["groups"]:
                 user.bothub_group_id = response["user"]["groups"][0]["id"]
 
+                if "chats" in response["user"]["groups"][0] and response["user"]["groups"][0]["chats"]:
+                    chat_data = response["user"]["groups"][0]["chats"][0]
+                    chat = Chat(
+                        id=0,
+                        user_id=user.id,
+                        chat_index=user.current_chat_index,
+                        bothub_chat_id=chat_data["id"],
+                        name=chat_data.get("name")
+                    )
+
+                    if "settings" in chat_data and "model" in chat_data["settings"]:
+                        chat.bothub_chat_model = chat_data["settings"]["model"]
+
         return user.bothub_access_token
-
-    async def get_default_model(self, user: User) -> Dict[str, Any]:
-        """
-        Получение модели по умолчанию
-
-        Args:
-            user: Пользователь
-
-        Returns:
-            Dict[str, Any]: Модель по умолчанию
-        """
-        access_token = await self.get_access_token(user)
-        models = await self.client.list_models(access_token)
-
-        # Ищем модель по умолчанию для текстовых чатов
-        for model in models:
-            if model.get("is_default", False) and "TEXT_TO_TEXT" in model.get("features", []):
-                return model
-
-        # Если не нашли, ищем первую доступную
-        for model in models:
-            if "TEXT_TO_TEXT" in model.get("features", []) and model.get("is_allowed", False):
-                return model
-
-        # Если вообще не нашли моделей, возвращаем пустую модель
-        return {"id": None, "parent_id": None}
 
     async def create_new_chat(self, user: User, chat: Chat, is_image_generation: bool = False) -> None:
         """
@@ -101,157 +87,65 @@ class BothubGateway:
             user.bothub_group_id = group_response["id"]
 
         try:
+            name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
             # Выбор модели в зависимости от типа чата
             if is_image_generation:
-                # Для генерации изображений используем модель из настроек пользователя
-                # или dalle по умолчанию
                 model_id = user.image_generation_model or "dall-e"
-                parent_model = model_id
-                chat_name = f"Telegram Image Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+                logger.info(f"Создание чата для генерации изображений с моделью {model_id}")
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    model_id
+                )
             else:
-                # Для текстового чата получаем модель по умолчанию
-                default_model = await self.get_default_model(user)
-                model_id = default_model.get("id")
-                parent_model = default_model.get("parent_id") or model_id
-                chat_name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                # Для обычного чата используем модель из настроек пользователя или GPT по умолчанию
+                model_id = user.gpt_model or "gpt-4o"
 
-            # Создаем чат с родительской моделью
-            response = await self.client.create_new_chat(
-                access_token,
-                user.bothub_group_id,
-                chat_name,
-                parent_model
-            )
+                logger.info(f"Создание чата для текста с моделью {model_id}")
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    model_id
+                )
 
+            # Обновляем данные чата
             chat.bothub_chat_id = response["id"]
             chat.bothub_chat_model = model_id
 
-            # Если это не чат для генерации изображений и у нас есть конкретная модель,
-            # сохраняем настройки чата с этой моделью
-            if not is_image_generation and model_id:
-                max_tokens = None
-                if model_id and "gpt-" in model_id:
-                    max_tokens = 4000
-
-                await self.client.save_chat_settings(
+            # Если есть системный промпт, сохраняем его
+            if chat.system_prompt:
+                await self.client.save_system_prompt(
                     access_token,
                     chat.bothub_chat_id,
-                    model_id,
-                    max_tokens,
-                    chat.context_remember,
                     chat.system_prompt
                 )
 
+            # Сохраняем настройки контекста
+            max_tokens = 4000 if "gpt-" in model_id else None
+
+            await self.client.save_chat_settings(
+                access_token,
+                chat.bothub_chat_id,
+                model_id,
+                max_tokens,
+                chat.context_remember,
+                chat.system_prompt
+            )
+
         except Exception as e:
             logger.error(f"Ошибка при создании чата: {str(e)}")
+
             # Если группа не найдена, создаем новую и пробуем снова
             if "404" in str(e) or "500" in str(e):
                 group_response = await self.client.create_new_group(access_token, "Telegram")
                 user.bothub_group_id = group_response["id"]
                 await self.create_new_chat(user, chat, is_image_generation)
-            # Если модель не найдена, пробуем создать чат без указания модели
-            elif "MODEL_NOT_FOUND" in str(e):
-                try:
-                    # Создаем чат без указания модели
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        chat_name
-                    )
-                    chat.bothub_chat_id = response["id"]
-
-                    # Пробуем получить список моделей и выбрать доступную
-                    models = await self.client.list_models(access_token)
-                    for model in models:
-                        if "TEXT_TO_TEXT" in model.get("features", []) and model.get("is_allowed", False):
-                            chat.bothub_chat_model = model.get("id")
-                            break
-
-                except Exception as inner_e:
-                    logger.error(f"Ошибка при создании чата без модели: {str(inner_e)}")
-                    raise
             else:
                 raise
-
-    async def generate_telegram_connection_link(self, user: User, settings) -> str:
-        """
-        Генерация ссылки для подключения Telegram к существующему аккаунту BotHub
-
-        Args:
-            user: Пользователь
-            settings: Настройки приложения
-
-        Returns:
-            str: Ссылка для подключения
-        """
-        try:
-            access_token = await self.get_access_token(user)
-            token_response = await self.client.generate_telegram_connection_token(access_token)
-            token = token_response.get("telegramConnectionToken")
-
-            if not token:
-                raise Exception("Не удалось получить токен подключения")
-
-            # Формируем URL для подключения
-            web_url = settings.BOTHUB_WEB_URL or "https://bothub.chat"
-            return f"{web_url}?telegram-connection-token={token}"
-        except Exception as e:
-            logger.error(f"Ошибка при генерации ссылки подключения: {str(e)}")
-            raise Exception(f"Не удалось создать ссылку подключения: {str(e)}")
-
-    async def reset_context(self, user: User, chat: Chat) -> None:
-        """
-        Сброс контекста чата
-
-        Args:
-            user: Пользователь
-            chat: Чат
-        """
-        if not chat.bothub_chat_id:
-            await self.create_new_chat(user, chat)
-            return
-
-        access_token = await self.get_access_token(user)
-        await self.client.reset_context(access_token, chat.bothub_chat_id)
-        chat.reset_context_counter()
-
-    async def get_web_search(self, user: User, chat: Chat) -> bool:
-        """
-        Получение статуса веб-поиска
-
-        Args:
-            user: Пользователь
-            chat: Чат
-
-        Returns:
-            bool: Включен ли веб-поиск
-        """
-        if not chat.bothub_chat_id:
-            return False
-
-        try:
-            access_token = await self.get_access_token(user)
-            response = await self.client.get_web_search(access_token, chat.bothub_chat_id)
-            return response
-        except Exception as e:
-            logger.error(f"Ошибка при получении статуса веб-поиска: {e}", exc_info=True)
-            return False
-
-    async def enable_web_search(self, user: User, chat: Chat, enabled: bool) -> None:
-        """
-        Включение/выключение веб-поиска
-
-        Args:
-            user: Пользователь
-            chat: Чат
-            enabled: Включить или выключить
-        """
-        if not chat.bothub_chat_id:
-            await self.create_new_chat(user, chat)
-
-        access_token = await self.get_access_token(user)
-        await self.client.enable_web_search(access_token, chat.bothub_chat_id, enabled)
-
 
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[
         str, Any]:
@@ -273,20 +167,15 @@ class BothubGateway:
         access_token = await self.get_access_token(user)
 
         try:
-            response = await self.client.send_message(
+            result = await self.client.send_message(
                 access_token,
                 chat.bothub_chat_id,
                 message,
                 files
             )
-
-            # Увеличиваем счетчик контекста, если надо запоминать его
-            if chat.context_remember:
-                chat.increment_context_counter()
-
-            return response
+            return result
         except Exception as e:
-            # Если чат не найден, создаем новый
+            # Если чат не найден, создаем новый и пробуем снова
             if "CHAT_NOT_FOUND" in str(e):
                 logger.warning(f"Чат не найден, создаю новый для пользователя {user.id}")
                 await self.create_new_chat(user, chat)
@@ -298,9 +187,9 @@ class BothubGateway:
                 )
             raise
 
-    async def save_system_prompt(self, user: User, chat: Chat) -> None:
+    async def reset_context(self, user: User, chat: Chat) -> None:
         """
-        Сохранение системного промпта для чата
+        Сброс контекста чата
 
         Args:
             user: Пользователь
@@ -310,13 +199,5 @@ class BothubGateway:
             await self.create_new_chat(user, chat)
             return
 
-        # Проверяем, что модель поддерживает системные промпты
-        # Обычно это GPT модели
-        if not chat.bothub_chat_model or "gpt" not in chat.bothub_chat_model.lower():
-            return
-
-        # Получаем токен доступа
         access_token = await self.get_access_token(user)
-
-        # Сохраняем системный промпт через API
-        await self.client.save_system_prompt(access_token, chat.bothub_chat_id, chat.system_prompt)
+        await self.client.reset_context(access_token, chat.bothub_chat_id)
