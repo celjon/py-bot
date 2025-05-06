@@ -58,19 +58,20 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     account_connection_usecase = AccountConnectionUseCase(bothub_gateway, settings)
 
     # Создание обработчиков
-    handlers_dp = create_handlers(
+    try:
+        handlers_router = create_handlers(
         chat_session_usecase=chat_session_usecase,
         account_connection_usecase=account_connection_usecase,
         intent_detection_service=intent_detection_service,
         user_repository=user_repository,
         chat_repository=chat_repository
-    )
+        )
+        logger.info(f"Created handler router: {handlers_router}")
+        dp.include_router(handlers_router)
+        logger.info("Successfully included router in dispatcher")
 
-    # Подключаем обработчики к диспетчеру
-    logger.info(f"Type of handlers_dp: {type(handlers_dp)}")
-    print(f"Type of handlers_dp: {type(handlers_dp)}")
-    dp.include_router(handlers_dp)
-
-    logger.info(f"Bot created with custom Telegram API URL: {settings.TELEGRAM_API_URL}")
+    except Exception as e:
+        logger.error(f"Error creating or registering handlers: {e}", exc_info=True)
+        raise
 
     return bot, dp

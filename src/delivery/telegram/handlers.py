@@ -53,6 +53,22 @@ def create_handlers(
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
     try:
+        @router.message(Command("debug"))
+        async def cmd_debug(message: Message):
+            logger.info(f"Получена команда /debug от {message.from_user.id}")
+            await message.answer("Отладочная команда работает!")
+
+        @router.message(Command("test"))
+        async def cmd_test(message: Message):
+            logger.info(f"Получена команда /test от {message.from_user.id}")
+            await message.answer("Тестовая команда работает!")
+
+        # Обработчик всех текстовых сообщений
+        @router.message(F.text)
+        async def handle_all_text(message: Message):
+            logger.info(f"Получено текстовое сообщение: {message.text} от {message.from_user.id}")
+            await message.answer(f"Эхо: {message.text}")
+
         async def get_or_create_user(message: Message) -> User:
             """Получение или создание пользователя из сообщения Telegram"""
             telegram_id = str(message.from_user.id)
@@ -1883,6 +1899,43 @@ def create_handlers(
                             parse_mode="Markdown"
                         )
 
+                @router.message(Command("test"))
+                async def handle_test_command(message: Message):
+                    """Тестовая команда для проверки работы бота"""
+                    try:
+                        logger.info(f"Получена тестовая команда от пользователя {message.from_user.id}")
+                        await message.answer("Тестовая команда работает!")
+
+                        # Вывод информации о боте для отладки
+                        me = await message.bot.get_me()
+                        await message.answer(
+                            f"Информация о боте:\nid: {me.id}\nusername: {me.username}\nname: {me.first_name}")
+
+                        # Проверяем, что можем получить пользователя и чат
+                        try:
+                            user = await get_or_create_user(message)
+                            chat = await get_or_create_chat(user)
+                            await message.answer(
+                                f"Данные пользователя получены: id={user.id}, chat_index={chat.chat_index}")
+                        except Exception as db_error:
+                            logger.error(f"Ошибка при получении данных пользователя: {db_error}", exc_info=True)
+                            await message.answer(f"Ошибка при получении данных пользователя: {str(db_error)}")
+
+                    except Exception as e:
+                        logger.error(f"Ошибка в тестовой команде: {e}", exc_info=True)
+                        await message.answer(f"Ошибка: {str(e)}")
+
+                # Простой обработчик текстовых сообщений для отладки
+                @router.message(F.text)
+                async def debug_text_handler(message: Message):
+                    """Простой обработчик текстовых сообщений для отладки"""
+                    try:
+                        logger.info(f"Получено сообщение: {message.text} от {message.from_user.id}")
+                        await message.answer(f"Я получил ваше сообщение: {message.text}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке текстового сообщения: {e}", exc_info=True)
+                        await message.answer("Произошла ошибка при обработке вашего сообщения.")
+
                 @router.message(F.video | F.video_note)
                 async def handle_video_message(message: Message):
                     """Обработка видео сообщений"""
@@ -1960,8 +2013,49 @@ def create_handlers(
                         )
 
                     return router
+
+                @router.message()
+                async def handle_any_message(message: Message):
+                    logger.info(f"Получено сообщение любого типа от {message.from_user.id}")
+                    logger.info(f"Детали сообщения: {message}")
+
+                @router.message(lambda msg: msg.text and msg.text.startswith('/'))
+                async def any_command(message: Message):
+                    logger.info(f"Получена какая-то команда: {message.text}")
+                    await message.answer(f"Получена команда: {message.text}")
+
+                @router.message(Command("bothub_test"))
+                async def handle_bothub_test(message: Message):
+                    try:
+                        logger.info(f"Тестирование BotHub API для {message.from_user.id}")
+
+                        await message.answer("Отправляю тестовый запрос в BotHub API...")
+
+                        # Получаем пользователя и чат
+                        user = await get_or_create_user(message)
+                        chat = await get_or_create_chat(user)
+
+                        # Пытаемся отправить тестовое сообщение
+                        try:
+                            result = await chat_session_usecase.send_message(user, chat,
+                                                                             "Тестовое сообщение для BotHub API")
+
+                            if "response" in result and "content" in result["response"]:
+                                await message.answer(f"Ответ от BotHub API: {result['response']['content']}")
+                            else:
+                                await message.answer("Ответ от BotHub API получен, но не содержит контента")
+
+                        except Exception as api_error:
+                            logger.error(f"Ошибка при вызове BotHub API: {api_error}", exc_info=True)
+                            await message.answer(f"Ошибка при вызове BotHub API: {str(api_error)}")
+
+                    except Exception as e:
+                        logger.error(f"Общая ошибка в тесте BotHub API: {e}", exc_info=True)
+                        await message.answer(f"Произошла ошибка: {str(e)}")
+
         logger.info("Handlers registered successfully")
         logger.info(f"Returning router of type: {type(router)}")
+        logger.info(f"Router created successfully: {router}")
         return router
 
     except Exception as e:
