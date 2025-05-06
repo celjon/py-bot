@@ -1,9 +1,10 @@
-# src/adapter/repository/chat_repository.py
-
 import aiosqlite
 import json
+import logging
 from typing import Optional, List
 from src.domain.entity.chat import Chat
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRepository:
@@ -48,7 +49,7 @@ class ChatRepository:
             if not row:
                 return None
 
-            # Сериализуем JSON поля
+            # Десериализуем JSON поля
             buffer = json.loads(row['buffer']) if row['buffer'] else {}
 
             return Chat(
@@ -79,13 +80,35 @@ class ChatRepository:
                     context_remember, context_counter, links_parse, formula_to_image,
                     answer_to_voice, name, system_prompt, buffer
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, chat_index) DO UPDATE SET
+                    bothub_chat_id = excluded.bothub_chat_id,
+                    bothub_chat_model = excluded.bothub_chat_model,
+                    context_remember = excluded.context_remember,
+                    context_counter = excluded.context_counter,
+                    links_parse = excluded.links_parse,
+                    formula_to_image = excluded.formula_to_image,
+                    answer_to_voice = excluded.answer_to_voice,
+                    name = excluded.name,
+                    system_prompt = excluded.system_prompt,
+                    buffer = excluded.buffer
             ''', (
                 chat.user_id, chat.chat_index, chat.bothub_chat_id, chat.bothub_chat_model,
                 int(chat.context_remember), chat.context_counter, int(chat.links_parse), int(chat.formula_to_image),
                 int(chat.answer_to_voice), chat.name, chat.system_prompt, buffer
             ))
             await db.commit()
-            return cursor.lastrowid
+
+            # Если это новая запись, возвращаем её ID
+            if cursor.lastrowid:
+                return cursor.lastrowid
+            else:
+                # Получаем ID существующей записи
+                cursor = await db.execute(
+                    "SELECT id FROM chats WHERE user_id = ? AND chat_index = ?",
+                    (chat.user_id, chat.chat_index)
+                )
+                row = await cursor.fetchone()
+                return row[0] if row else 0
 
     async def update(self, chat: Chat) -> None:
         """Обновить чат в базе данных"""
@@ -136,7 +159,7 @@ class ChatRepository:
 
             chats = []
             for row in rows:
-                # Сериализуем JSON поля
+                # Десериализуем JSON поля
                 buffer = json.loads(row['buffer']) if row['buffer'] else {}
 
                 chats.append(Chat(
