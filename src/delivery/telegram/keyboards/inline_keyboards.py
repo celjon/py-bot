@@ -1,8 +1,8 @@
+# src/delivery/telegram/keyboards/inline_keyboards.py
+
 import json
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Dict, Optional
-
-# src/delivery/telegram/keyboards/inline_keyboards.py
 
 def get_chat_model_inline_keyboard(models: List[Dict], current_model: Optional[str] = None) -> InlineKeyboardMarkup:
     """Возвращает инлайн-клавиатуру для выбора модели чата"""
@@ -38,16 +38,16 @@ def get_context_inline_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     """Возвращает инлайн-клавиатуру для управления контекстом"""
     buttons = [
         [InlineKeyboardButton(
-            text=f"Контекст включен {'✅' if enabled else ''}",
-            callback_data=json.dumps({"action": "context_on"})
+            text=f"Запоминать контекст {'✅' if enabled else ''}",
+            callback_data=json.dumps({"t": "ctx", "a": "on"})
         )],
         [InlineKeyboardButton(
-            text=f"Контекст выключен {'✅' if not enabled else ''}",
-            callback_data=json.dumps({"action": "context_off"})
+            text=f"Не запоминать контекст {'✅' if not enabled else ''}",
+            callback_data=json.dumps({"t": "ctx", "a": "off"})
         )],
         [InlineKeyboardButton(
             text="❌ Отмена",
-            callback_data=json.dumps({"action": "cancel"})
+            callback_data=json.dumps({"t": "c"})
         )]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
