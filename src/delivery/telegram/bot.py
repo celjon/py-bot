@@ -60,13 +60,15 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     # Создание обработчиков
     handlers_dp = create_handlers(
         chat_session_usecase=chat_session_usecase,
-        account_connection_usecase=account_connection_usecase,  # Добавляем новый юзкейс
+        account_connection_usecase=account_connection_usecase,
         intent_detection_service=intent_detection_service,
         user_repository=user_repository,
         chat_repository=chat_repository
     )
 
     # Подключаем обработчики к диспетчеру
+    logger.info(f"Type of handlers_dp: {type(handlers_dp)}")
+    print(f"Type of handlers_dp: {type(handlers_dp)}")
     dp.include_router(handlers_dp)
 
     logger.info(f"Bot created with custom Telegram API URL: {settings.TELEGRAM_API_URL}")
