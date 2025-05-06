@@ -2,7 +2,7 @@
 
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from aiogram.enums.chat_action import ChatAction
 from src.domain.service.intent_detection import IntentDetectionService, IntentType
 from src.domain.usecase.chat_session import ChatSessionUseCase
@@ -13,6 +13,7 @@ from src.domain.usecase.system_prompt import SystemPromptUseCase
 from src.domain.usecase.present import PresentUseCase
 from src.domain.usecase.referral import ReferralUseCase
 from src.domain.usecase.model_selection import ModelSelectionUseCase
+from src.domain.usecase.buffer_message import BufferMessageUseCase
 from src.domain.service.chat_service import ChatService
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
@@ -21,7 +22,7 @@ from src.adapter.repository.chat_repository import ChatRepository
 from src.adapter.repository.present_repository import PresentRepository
 import logging
 import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,18 @@ dp = Router()
 def create_handlers(
         chat_session_usecase: ChatSessionUseCase,
         account_connection_usecase: AccountConnectionUseCase,
-        image_generation_usecase: ImageGenerationUseCase,
-        web_search_usecase: WebSearchUseCase,
-        system_prompt_usecase: SystemPromptUseCase,
-        present_usecase: PresentUseCase,
-        referral_usecase: ReferralUseCase,
-        model_selection_usecase: ModelSelectionUseCase,
-        chat_service: ChatService,
         intent_detection_service: IntentDetectionService,
         user_repository: UserRepository,
         chat_repository: ChatRepository,
-        present_repository: PresentRepository
+        present_repository: PresentRepository = None,
+        image_generation_usecase: Optional[ImageGenerationUseCase] = None,
+        web_search_usecase: Optional[WebSearchUseCase] = None,
+        system_prompt_usecase: Optional[SystemPromptUseCase] = None,
+        present_usecase: Optional[PresentUseCase] = None,
+        referral_usecase: Optional[ReferralUseCase] = None,
+        model_selection_usecase: Optional[ModelSelectionUseCase] = None,
+        buffer_message_usecase: Optional[BufferMessageUseCase] = None,
+        chat_service: Optional[ChatService] = None
 ):
     """Фабричный метод для создания обработчиков сообщений Telegram"""
 
@@ -61,40 +63,69 @@ def create_handlers(
                 last_name=message.from_user.last_name,
                 username=message.from_user.username,
                 language_code=message.from_user.language_code,
-                current_chat_index=1
+                current_chat_index=1,
+                current_chat_list_page=1
             )
             user_id = await user_repository.save(user)
             user.id = user_id
 
         return user
 
-    async def send_long_message(message: Message, content: str):
+    async def get_or_create_chat(user: User) -> Chat:
+        """Получение или создание чата для пользователя"""
+        chat = await chat_repository.find_by_user_id_and_chat_index(user.id, user.current_chat_index)
+
+        if not chat:
+            chat = Chat(
+                id=0,
+                user_id=user.id,
+                chat_index=user.current_chat_index,
+                context_remember=True,
+                context_counter=0,
+                links_parse=False,
+                formula_to_image=False,
+                answer_to_voice=False
+            )
+
+            # Специальная настройка для пятого чата (📝)
+            if user.current_chat_index == 5:
+                chat.context_remember = False
+                chat.system_prompt = "Ты помощник, который помогает писать и редактировать тексты."
+
+            chat_id = await chat_repository.save(chat)
+            chat.id = chat_id
+
+        return chat
+
+    async def send_long_message(message: Message, content: str, parse_mode: str = "Markdown"):
         """Отправляет длинное сообщение, разбивая его на части, если необходимо."""
-        if len(content) <= 3900:  # Уменьшенный порог для учета Markdown
-            await message.answer(content, parse_mode="Markdown")
+        max_length = 3900 if parse_mode == "Markdown" else 4096
+
+        if len(content) <= max_length:
+            await message.answer(content, parse_mode=parse_mode)
             return
 
         parts = []
         while content:
-            if len(content) <= 3900:
+            if len(content) <= max_length:
                 parts.append(content)
                 content = ""
             else:
-                last_newline = content[:3900].rfind("\n")
+                last_newline = content[:max_length].rfind("\n")
                 if last_newline == -1:
-                    last_newline = 3900
+                    last_newline = max_length
                 parts.append(content[:last_newline])
                 content = content[last_newline:]
 
         for part in parts:
-            await message.answer(part, parse_mode="Markdown")
+            await message.answer(part, parse_mode=parse_mode)
 
     # ==================== ГЕНЕРАТОРЫ КЛАВИАТУР ====================
 
-    def get_main_keyboard(user: User, chat: Chat) -> List[List[str]]:
+    def get_main_keyboard(user: User, chat: Chat) -> ReplyKeyboardMarkup:
         """Создание основной клавиатуры бота"""
         # Получаем кнопки чатов
-        chat_buttons = chat_service.get_chat_buttons(user.current_chat_index)
+        chat_buttons = get_chat_buttons(user.current_chat_index)
 
         # Проверяем, включен ли веб-поиск
         web_search_text = "🔍 Поиск в интернете"
@@ -104,19 +135,48 @@ def create_handlers(
             web_search_text += " ❌"
 
         # Формируем клавиатуру
-        keyboard = [
-            ["🔄 Новый чат", web_search_text, "🎨 Генерация изображений"],
-            ["⚙️ Инструменты", "📋 Буфер"] + chat_buttons
-        ]
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                ["🔄 Новый чат", web_search_text, "🎨 Генерация изображений"],
+                ["⚙️ Инструменты", "📋 Буфер"] + chat_buttons
+            ],
+            resize_keyboard=True
+        )
 
         return keyboard
+
+    def get_chat_buttons(current_chat_index: int) -> List[str]:
+        """Возвращает кнопки чатов с маркером текущего чата"""
+        buttons = []
+        chat_emojis = {"1️⃣": 1, "2️⃣": 2, "3️⃣": 3, "4️⃣": 4, "📝": 5}
+
+        for emoji, index in chat_emojis.items():
+            if index == current_chat_index:
+                buttons.append(f"{emoji}✅")
+            else:
+                buttons.append(emoji)
+
+        return buttons
+
+    def get_buffer_keyboard() -> ReplyKeyboardMarkup:
+        """Клавиатура для режима буфера"""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                ["📤 Отправить буфер", "❌ Отмена"]
+            ],
+            resize_keyboard=True
+        )
 
     def get_chat_model_inline_keyboard(models: List[Dict], current_model: Optional[str] = None) -> InlineKeyboardMarkup:
         """Возвращает инлайн-клавиатуру для выбора модели чата"""
         buttons = []
 
         # Фильтруем только модели для текстовой генерации
-        text_models = model_selection_usecase.filter_text_models(models)
+        if model_selection_usecase:
+            text_models = model_selection_usecase.filter_text_models(models)
+        else:
+            # Если юзкейс не предоставлен, используем все модели
+            text_models = models
 
         for model in text_models:
             # Добавляем метку выбранной модели
@@ -148,7 +208,11 @@ def create_handlers(
         buttons = []
 
         # Фильтруем только модели для генерации изображений
-        image_models = model_selection_usecase.filter_image_models(models)
+        if model_selection_usecase:
+            image_models = model_selection_usecase.filter_image_models(models)
+        else:
+            # Если юзкейс не предоставлен, используем все модели
+            image_models = models
 
         for model in image_models:
             # Добавляем метку выбранной модели
@@ -264,7 +328,7 @@ def create_handlers(
 
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    def get_referral_templates_inline_keyboard(templates: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    def get_referral_templates_inline_keyboard(templates: List[Any]) -> InlineKeyboardMarkup:
         """Возвращает инлайн-клавиатуру для выбора шаблона реферальной программы"""
         buttons = []
 
@@ -346,7 +410,7 @@ def create_handlers(
         """Обработка команды /start"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             # Проверяем наличие реферального кода
             if message.text and len(message.text.split()) > 1:
@@ -354,7 +418,8 @@ def create_handlers(
                 await user_repository.update(user)
 
             # Отправляем уведомления о подарках, если есть
-            await present_usecase.send_notifications(user)
+            if present_usecase:
+                await present_usecase.send_notifications(user)
 
             await message.answer(
                 "👋 Привет! Я BotHub, умный ассистент на базе нейросетей.\n\n"
@@ -375,7 +440,7 @@ def create_handlers(
                 "/referral - управление реферальной программой\n"
                 "/present - подарить токены другому пользователю",
                 parse_mode="Markdown",
-                reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                reply_markup=get_main_keyboard(user, chat)
             )
         except Exception as e:
             logger.error(f"Ошибка обработки команды /start: {e}", exc_info=True)
@@ -389,15 +454,17 @@ def create_handlers(
         """Обработка команды /reset для сброса контекста"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             # Сбрасываем контекст
-            await chat_service.reset_context(user, chat)
+            await chat_session_usecase.reset_context(user, chat)
+            chat.reset_context_counter()
+            await chat_repository.update(chat)
 
             await message.answer(
                 "🔄 Контекст разговора сброшен! Теперь я не буду учитывать предыдущие сообщения.",
                 parse_mode="Markdown",
-                reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                reply_markup=get_main_keyboard(user, chat)
             )
         except Exception as e:
             logger.error(f"Ошибка сброса контекста: {e}", exc_info=True)
@@ -424,11 +491,10 @@ def create_handlers(
                 # Генерируем ссылку для подключения
                 link = await account_connection_usecase.generate_connection_link(user)
 
-                # Отправляем сообщение с ссылкой, избегая использования Markdown
+                # Отправляем сообщение с ссылкой
                 await message.answer(
                     f"Для привязки вашего Telegram к существующему аккаунту BotHub, перейдите по ссылке:\n\n{link}\n\n"
-                    f"После привязки вы сможете использовать ваши токены из аккаунта BotHub.",
-                    parse_mode=None
+                    f"После привязки вы сможете использовать ваши токены из аккаунта BotHub."
                 )
             except Exception as link_error:
                 logger.error(f"Ошибка при генерации ссылки: {link_error}", exc_info=True)
@@ -454,7 +520,14 @@ def create_handlers(
         """Обработка команды /gpt_config для настройки моделей"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
+
+            if not model_selection_usecase:
+                await message.answer(
+                    "❌ Настройка моделей временно недоступна.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Получаем список доступных моделей
             models = await model_selection_usecase.list_available_models(user)
@@ -476,7 +549,14 @@ def create_handlers(
         """Обработка команды /image_generation_config для настройки моделей генерации изображений"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
+
+            if not model_selection_usecase:
+                await message.answer(
+                    "❌ Настройка моделей временно недоступна.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Получаем список доступных моделей
             models = await model_selection_usecase.list_available_models(user)
@@ -498,7 +578,7 @@ def create_handlers(
         """Обработка команды /context для управления контекстом"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             await message.answer(
                 "Управление контекстом:\n\n"
@@ -519,7 +599,14 @@ def create_handlers(
         """Обработка команды /web_search для управления веб-поиском"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
+
+            if not web_search_usecase:
+                await message.answer(
+                    "❌ Управление веб-поиском временно недоступно.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Получаем текущий статус веб-поиска
             web_search_enabled = await web_search_usecase.gateway.get_web_search(user, chat)
@@ -542,7 +629,14 @@ def create_handlers(
         """Обработка команды /system_prompt для управления системным промптом"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
+
+            if not system_prompt_usecase:
+                await message.answer(
+                    "❌ Управление системным промптом временно недоступно.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Проверяем, есть ли у сообщения текст после команды
             command_text = message.text.strip()
@@ -551,11 +645,23 @@ def create_handlers(
             if len(parts) > 1:
                 # Если есть текст после команды, устанавливаем его как системный промпт
                 new_prompt = parts[1]
+
+                # Обрабатываем команду сброса
+                if new_prompt.lower() == "reset":
+                    await system_prompt_usecase.reset_system_prompt(user, chat)
+                    await message.answer(
+                        "✅ Системный промпт сброшен.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+                    return
+
+                # Устанавливаем новый промпт
                 await system_prompt_usecase.set_system_prompt(user, chat, new_prompt)
                 await message.answer(
                     f"✅ Системный промпт установлен:\n\n{new_prompt}",
                     parse_mode="Markdown",
-                    reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                    reply_markup=get_main_keyboard(user, chat)
                 )
             else:
                 # Если нет текста, показываем текущий промпт и предлагаем его изменить
@@ -587,7 +693,7 @@ def create_handlers(
         """Обработка команды /formula для управления конвертацией формул в изображения"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             await message.answer(
                 "Управление конвертацией формул в изображения:\n\n"
@@ -607,7 +713,7 @@ def create_handlers(
         """Обработка команды /scan_links для управления парсингом ссылок"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             await message.answer(
                 "Управление парсингом ссылок:\n\n"
@@ -627,7 +733,7 @@ def create_handlers(
         """Обработка команды /voice для управления ответами голосом"""
         try:
             user = await get_or_create_user(message)
-            chat = await chat_service.get_or_create_chat(user)
+            chat = await get_or_create_chat(user)
 
             await message.answer(
                 "Управление ответами голосом:\n\n"
@@ -647,6 +753,13 @@ def create_handlers(
         """Обработка команды /present для подарка токенов"""
         try:
             user = await get_or_create_user(message)
+
+            if not present_usecase:
+                await message.answer(
+                    "❌ Функция подарков токенов временно недоступна.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Проверяем, есть ли у сообщения текст после команды
             command_text = message.text.strip()
@@ -683,8 +796,7 @@ def create_handlers(
                         f"Получатель: {formatted_recipient}\n"
                         f"Количество токенов: {tokens}",
                         parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, await chat_service.get_or_create_chat(user)),
-                                      "resize_keyboard": True}
+                        reply_markup=get_main_keyboard(user, await get_or_create_chat(user))
                     )
                 else:
                     await message.answer(
@@ -715,6 +827,13 @@ def create_handlers(
         """Обработка команды /referral для управления реферальной программой"""
         try:
             user = await get_or_create_user(message)
+
+            if not referral_usecase:
+                await message.answer(
+                    "❌ Функция реферальной программы временно недоступна.",
+                    parse_mode="Markdown"
+                )
+                return
 
             # Проверяем, есть ли аргументы у команды
             command_text = message.text.strip()
@@ -750,7 +869,7 @@ def create_handlers(
                     )
                     return
 
-                    # Показываем список программ
+                # Показываем список программ
                 first_message = True
                 for program in programs:
                     if first_message:
@@ -779,580 +898,1055 @@ def create_handlers(
                         parse_mode="Markdown",
                         disable_web_page_preview=True
                     )
-            except Exception as e:
+        except Exception as e:
             logger.error(f"Ошибка при обработке команды referral: {e}", exc_info=True)
             await message.answer(
                 "❌ Не удалось обработать команду. Попробуйте позже.",
                 parse_mode="Markdown"
             )
 
-        @dp.message(Command("chat_list"))
-        async def handle_chat_list_command(message: Message):
-            """Обработка команды /chat_list для просмотра списка чатов"""
-            try:
-                user = await get_or_create_user(message)
+    @dp.message(Command("chat_list"))
+    async def handle_chat_list_command(message: Message):
+        """Обработка команды /chat_list для просмотра списка чатов"""
+        try:
+            user = await get_or_create_user(message)
 
-                # Получаем список чатов с пагинацией
-                chats, total_pages = await chat_service.get_chat_list(user, user.current_chat_list_page)
-
+            if not chat_service:
                 await message.answer(
-                    "📋 Список ваших чатов:",
-                    parse_mode="Markdown",
-                    reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index,
-                                                               user.current_chat_list_page, total_pages)
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при обработке команды chat_list: {e}", exc_info=True)
-                await message.answer(
-                    "❌ Не удалось обработать команду. Попробуйте позже.",
+                    "❌ Функция просмотра списка чатов временно недоступна.",
                     parse_mode="Markdown"
                 )
+                return
 
-        @dp.message(Command("help"))
-        async def handle_help_command(message: Message):
-            """Обработка команды /help для вывода справки"""
+            # Получаем список чатов с пагинацией
+            chats, total_pages = await chat_service.get_chat_list(user, user.current_chat_list_page)
+
+            await message.answer(
+                "📋 Список ваших чатов:",
+                parse_mode="Markdown",
+                reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index,
+                                                           user.current_chat_list_page, total_pages)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при обработке команды chat_list: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось обработать команду. Попробуйте позже.",
+                parse_mode="Markdown"
+            )
+
+    @dp.message(Command("help"))
+    async def handle_help_command(message: Message):
+        """Обработка команды /help для вывода справки"""
+        try:
+            await message.answer(
+                "📚 *Справка по командам бота*\n\n"
+                "/start - Начать общение с ботом\n"
+                "/reset - Сбросить контекст разговора\n"
+                "/link_account - Привязать аккаунт Telegram к существующему аккаунту BotHub\n"
+                "/gpt_config - Настройка моделей для текстовой генерации\n"
+                "/image_generation_config - Настройка моделей для генерации изображений\n"
+                "/context - Управление контекстом (запоминание предыдущих сообщений)\n"
+                "/web_search - Управление веб-поиском\n"
+                "/system_prompt - Управление системным промптом\n"
+                "/formula - Управление конвертацией формул в изображения\n"
+                "/scan_links - Управление парсингом ссылок\n"
+                "/voice - Управление ответами голосом\n"
+                "/present - Подарить токены другому пользователю\n"
+                "/referral - Управление реферальной программой\n"
+                "/chat_list - Просмотр списка чатов\n"
+                "/help - Вывод этой справки\n\n"
+                "Вы также можете просто написать мне, что вы хотите, и я автоматически определю "
+                "ваше намерение (чат, поиск или генерация изображений).",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при обработке команды help: {e}", exc_info=True)
+            await message.answer(
+                "❌ Не удалось обработать команду. Попробуйте позже.",
+                parse_mode="Markdown"
+            )
+
+    # ==================== ОБРАБОТЧИКИ КОЛБЭКОВ ====================
+
+    @dp.callback_query()
+    async def handle_callback_query(callback: CallbackQuery):
+        """Обработка всех callback-запросов от инлайн клавиатуры"""
+        try:
+            user = await get_or_create_user(callback.message)
+            chat = await get_or_create_chat(user)
+
+            # Парсим данные callback
             try:
-                await message.answer(
-                    "📚 *Справка по командам бота*\n\n"
-                    "/start - Начать общение с ботом\n"
-                    "/reset - Сбросить контекст разговора\n"
-                    "/link_account - Привязать аккаунт Telegram к существующему аккаунту BotHub\n"
-                    "/gpt_config - Настройка моделей для текстовой генерации\n"
-                    "/image_generation_config - Настройка моделей для генерации изображений\n"
-                    "/context - Управление контекстом (запоминание предыдущих сообщений)\n"
-                    "/web_search - Управление веб-поиском\n"
-                    "/system_prompt - Управление системным промптом\n"
-                    "/formula - Управление конвертацией формул в изображения\n"
-                    "/scan_links - Управление парсингом ссылок\n"
-                    "/voice - Управление ответами голосом\n"
-                    "/present - Подарить токены другому пользователю\n"
-                    "/referral - Управление реферальной программой\n"
-                    "/chat_list - Просмотр списка чатов\n"
-                    "/help - Вывод этой справки\n\n"
-                    "Вы также можете просто написать мне, что вы хотите, и я автоматически определю "
-                    "ваше намерение (чат, поиск или генерация изображений).",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при обработке команды help: {e}", exc_info=True)
-                await message.answer(
-                    "❌ Не удалось обработать команду. Попробуйте позже.",
-                    parse_mode="Markdown"
-                )
+                data = json.loads(callback.data)
+                action = data.get("action")
+            except:
+                await callback.answer("Неверный формат данных")
+                return
 
-        # ==================== ОБРАБОТЧИКИ КОЛБЭКОВ ====================
+            # Обработка разных типов действий
+            if action == "cancel":
+                # Просто закрываем инлайн-клавиатуру и отвечаем
+                await callback.message.delete_reply_markup()
+                await callback.answer("Операция отменена")
 
-        @dp.callback_query()
-        async def handle_callback_query(callback: CallbackQuery):
-            """Обработка всех callback-запросов от инлайн клавиатуры"""
-            try:
-                user = await get_or_create_user(callback.message)
-                chat = await chat_service.get_or_create_chat(user)
-
-                # Парсим данные callback
-                try:
-                    data = json.loads(callback.data)
-                    action = data.get("action")
-                except:
-                    await callback.answer("Неверный формат данных")
+            elif action == "select_chat_model":
+                if not model_selection_usecase:
+                    await callback.answer("Функция недоступна")
                     return
 
-                # Обработка разных типов действий
-                if action == "cancel":
-                    # Просто закрываем инлайн-клавиатуру и отвечаем
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Операция отменена")
+                model_id = data.get("model_id")
+                is_allowed = data.get("allowed", False)
 
-                elif action == "select_chat_model":
-                    model_id = data.get("model_id")
-                    is_allowed = data.get("allowed", False)
+                if not is_allowed:
+                    await callback.answer("Эта модель недоступна")
+                    return
 
-                    if not is_allowed:
-                        await callback.answer("Эта модель недоступна")
-                        return
+                # Сохраняем выбранную модель и создаем новый чат
+                await model_selection_usecase.select_chat_model(user, chat, model_id)
+                await user_repository.update(user)
+                await chat_repository.update(chat)
 
-                    # Сохраняем выбранную модель и создаем новый чат
-                    await model_selection_usecase.select_chat_model(user, chat, model_id)
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer(f"Модель {model_id} выбрана")
+                await callback.message.answer(
+                    f"✅ Модель *{model_id}* успешно выбрана и новый чат создан.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "select_image_model":
+                if not model_selection_usecase:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                model_id = data.get("model_id")
+                is_allowed = data.get("allowed", False)
+
+                if not is_allowed:
+                    await callback.answer("Эта модель недоступна")
+                    return
+
+                # Сохраняем выбранную модель
+                await model_selection_usecase.select_image_model(user, model_id)
+                await user_repository.update(user)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer(f"Модель {model_id} выбрана для генерации изображений")
+                await callback.message.answer(
+                    f"✅ Модель *{model_id}* успешно выбрана для генерации изображений.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "toggle_web_search":
+                if not web_search_usecase:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                # Получаем текущий статус и переключаем его
+                current_status = await web_search_usecase.gateway.get_web_search(user, chat)
+                new_status = not current_status
+
+                # Применяем новый статус
+                await web_search_usecase.toggle_web_search(user, chat, new_status)
+
+                # Обновляем клавиатуру
+                await callback.message.edit_reply_markup(
+                    reply_markup=get_web_search_inline_keyboard(new_status)
+                )
+
+                status_text = "включен" if new_status else "выключен"
+                await callback.answer(f"Веб-поиск {status_text}")
+
+            elif action == "context_on":
+                # Включаем контекст
+                chat.context_remember = True
+                await chat_repository.update(chat)
+
+                # Создаем новый чат с активным контекстом
+                await chat_session_usecase.gateway.create_new_chat(user, chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Контекст включен")
+                await callback.message.answer(
+                    "✅ Контекст включен. Теперь я буду помнить предыдущие сообщения.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "context_off":
+                # Выключаем контекст
+                chat.context_remember = False
+                chat.reset_context_counter()
+                await chat_repository.update(chat)
+
+                # Создаем новый чат с выключенным контекстом
+                await chat_session_usecase.gateway.create_new_chat(user, chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Контекст выключен")
+                await callback.message.answer(
+                    "✅ Контекст выключен. Теперь я не буду помнить предыдущие сообщения.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "formula_to_image_on":
+                # Включаем конвертацию формул в изображения
+                chat.formula_to_image = True
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Конвертация формул включена")
+                await callback.message.answer(
+                    "✅ Конвертация формул в изображения включена.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "formula_to_image_off":
+                # Выключаем конвертацию формул в изображения
+                chat.formula_to_image = False
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Конвертация формул выключена")
+                await callback.message.answer(
+                    "✅ Конвертация формул в изображения выключена.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "links_parse_on":
+                # Включаем парсинг ссылок
+                chat.links_parse = True
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Парсинг ссылок включен")
+                await callback.message.answer(
+                    "✅ Парсинг ссылок включен.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "links_parse_off":
+                # Выключаем парсинг ссылок
+                chat.links_parse = False
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Парсинг ссылок выключен")
+                await callback.message.answer(
+                    "✅ Парсинг ссылок выключен.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "voice_answer_on":
+                # Включаем ответы голосом
+                chat.answer_to_voice = True
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Ответы голосом включены")
+                await callback.message.answer(
+                    "✅ Ответы голосом включены.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "voice_answer_off":
+                # Выключаем ответы голосом
+                chat.answer_to_voice = False
+                await chat_repository.update(chat)
+
+                # Обновляем сообщение и отвечаем пользователю
+                await callback.message.delete_reply_markup()
+                await callback.answer("Ответы голосом выключены")
+                await callback.message.answer(
+                    "✅ Ответы голосом выключены.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+            elif action == "chat_page":
+                if not chat_service:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                # Переключаем страницу чатов
+                page = data.get("page", 1)
+                user.current_chat_list_page = page
+                await user_repository.update(user)
+
+                # Получаем обновленный список чатов
+                chats, total_pages = await chat_service.get_chat_list(user, page)
+
+                # Обновляем клавиатуру
+                await callback.message.edit_reply_markup(
+                    reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index, page, total_pages)
+                )
+
+                await callback.answer(f"Страница {page}")
+
+            elif action == "select_chat":
+                if not chat_service:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                # Переключаемся на выбранный чат
+                chat_index = data.get("chat_index")
+                current_page = data.get("current_page", 1)
+
+                # Переключаем чат
+                selected_chat = await chat_service.switch_chat(user, chat_index)
+
+                if selected_chat:
                     await user_repository.update(user)
-                    await chat_repository.update(chat)
-
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer(f"Модель {model_id} выбрана")
-                    await callback.message.answer(
-                        f"✅ Модель *{model_id}* успешно выбрана и новый чат создан.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-
-                elif action == "select_image_model":
-                    model_id = data.get("model_id")
-                    is_allowed = data.get("allowed", False)
-
-                    if not is_allowed:
-                        await callback.answer("Эта модель недоступна")
-                        return
-
-                    # Сохраняем выбранную модель
-                    await model_selection_usecase.select_image_model(user, model_id)
-                    await user_repository.update(user)
-
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer(f"Модель {model_id} выбрана для генерации изображений")
-                    await callback.message.answer(
-                        f"✅ Модель *{model_id}* успешно выбрана для генерации изображений.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-
-                elif action == "toggle_web_search":
-                    # Получаем текущий статус и переключаем его
-                    current_status = await web_search_usecase.gateway.get_web_search(user, chat)
-                    new_status = not current_status
-
-                    # Применяем новый статус
-                    await web_search_usecase.toggle_web_search(user, chat, new_status)
 
                     # Обновляем клавиатуру
+                    chats, total_pages = await chat_service.get_chat_list(user, current_page)
                     await callback.message.edit_reply_markup(
-                        reply_markup=get_web_search_inline_keyboard(new_status)
+                        reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index, current_page,
+                                                                   total_pages)
                     )
 
-                    status_text = "включен" if new_status else "выключен"
-                    await callback.answer(f"Веб-поиск {status_text}")
-
-                elif action == "context_on":
-                    # Включаем контекст
-                    await chat_service.update_chat_settings(chat, context_remember=True)
-
-                    # Создаем новый чат с активным контекстом
-                    await chat_session_usecase.gateway.create_new_chat(user, chat)
-
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Контекст включен")
+                    await callback.answer(f"Выбран чат {chat_index}")
                     await callback.message.answer(
-                        "✅ Контекст включен. Теперь я буду помнить предыдущие сообщения.",
+                        f"✅ Выбран чат {chat_index}" + (f" | {selected_chat.name}" if selected_chat.name else ""),
                         parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                        reply_markup=get_main_keyboard(user, selected_chat)
+                    )
+                else:
+                    await callback.answer("Чат не найден")
+
+            elif action == "create_new_chat":
+                if not chat_service:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                # Запрашиваем имя для нового чата
+                await callback.message.delete_reply_markup()
+                await callback.answer("Создание нового чата")
+
+                # Устанавливаем состояние пользователя
+                user.state = "waiting_for_chat_name"
+                await user_repository.update(user)
+
+                await callback.message.answer(
+                    "📝 Введите название для нового чата или отправьте `/cancel` для отмены:",
+                    parse_mode="Markdown"
+                )
+
+            elif action == "select_referral_template":
+                if not referral_usecase:
+                    await callback.answer("Функция недоступна")
+                    return
+
+                # Создаем реферальную программу с выбранным шаблоном
+                template_id = data.get("template_id")
+
+                # Создаем программу
+                try:
+                    program = await referral_usecase.create_referral_program(user, template_id)
+
+                    # Получаем ссылки программы
+                    links = referral_usecase.get_referral_links(program)
+
+                    # Формируем сообщение с информацией о программе
+                    program_text = (
+                        f"✅ Реферальная программа успешно создана!\n\n"
+                        f"📊 *{program.template.name if program.template else 'Реферальная программа'}*\n\n"
+                        f"Код приглашения: `{links['code']}`\n\n"
+                        f"Ссылки для приглашения:\n"
+                        f"🌐 [Веб-ссылка]({links['web']})\n"
+                        f"📱 [Telegram]({links['telegram']})"
                     )
 
-                elif action == "context_off":
-                    # Выключаем контекст
-                    await chat_service.update_chat_settings(chat, context_remember=False)
-
-                    # Создаем новый чат с выключенным контекстом
-                    await chat_session_usecase.gateway.create_new_chat(user, chat)
-
-                    # Обновляем сообщение и отвечаем пользователю
                     await callback.message.delete_reply_markup()
-                    await callback.answer("Контекст выключен")
                     await callback.message.answer(
-                        "✅ Контекст выключен. Теперь я не буду помнить предыдущие сообщения.",
+                        program_text,
                         parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                        disable_web_page_preview=True,
+                        reply_markup=get_main_keyboard(user, chat)
                     )
-
-                elif action == "formula_to_image_on":
-                    # Включаем конвертацию формул в изображения
-                    await chat_service.update_chat_settings(chat, formula_to_image=True)
-
-                    # Обновляем сообщение и отвечаем пользователю
+                except Exception as e:
+                    logger.error(f"Ошибка при создании реферальной программы: {e}", exc_info=True)
                     await callback.message.delete_reply_markup()
-                    await callback.answer("Конвертация формул включена")
                     await callback.message.answer(
-                        "✅ Конвертация формул в изображения включена.",
+                        f"❌ Не удалось создать реферальную программу: {str(e)}",
                         parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                        reply_markup=get_main_keyboard(user, chat)
                     )
 
-                elif action == "formula_to_image_off":
-                    # Выключаем конвертацию формул в изображения
-                    await chat_service.update_chat_settings(chat, formula_to_image=False)
+            elif action == "MJ_BUTTON":
+                if not image_generation_usecase:
+                    await callback.answer("Функция недоступна")
+                    return
 
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Конвертация формул выключена")
-                    await callback.message.answer(
-                        "✅ Конвертация формул в изображения выключена.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
+                # Обработка кнопок Midjourney
+                button_id = data.get("id")
+
+                if not button_id:
+                    await callback.answer("Некорректный ID кнопки")
+                    return
+
+                # Сообщаем о начале обработки
+                await callback.answer("Обрабатываю запрос Midjourney...")
+                await callback.message.answer("🎨 Обрабатываю ваш выбор, это может занять некоторое время...")
+
+                # Вызываем метод для обработки кнопки Midjourney
+                try:
+                    # В этом месте должен быть соответствующий usecase для кнопок Midjourney
+                    # Пока просто имитируем
+                    result = await image_generation_usecase.generate_image(
+                        user,
+                        chat,
+                        f"Применяю действие Midjourney (button_id: {button_id})"
                     )
 
-                elif action == "links_parse_on":
-                    # Включаем парсинг ссылок
-                    await chat_service.update_chat_settings(chat, links_parse=True)
+                    # Обрабатываем результаты
+                    if "response" in result and "attachments" in result["response"]:
+                        # Отправляем каждое сгенерированное изображение
+                        for attachment in result["response"]["attachments"]:
+                            if "file" in attachment and attachment["file"].get("type") == "IMAGE":
+                                image_url = attachment["file"].get("url", "")
+                                if not image_url and "path" in attachment["file"]:
+                                    image_url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
 
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Парсинг ссылок включен")
-                    await callback.message.answer(
-                        "✅ Парсинг ссылок включен.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
+                                if image_url:
+                                    # Проверяем наличие кнопок Midjourney
+                                    inline_markup = None
+                                    if "buttons" in attachment and any(
+                                            btn.get("type") == "MJ_BUTTON" for btn in attachment["buttons"]):
+                                        # Формируем кнопки для Midjourney
+                                        mj_buttons = []
+                                        for btn in attachment["buttons"]:
+                                            if btn.get("type") == "MJ_BUTTON":
+                                                mj_buttons.append(
+                                                    InlineKeyboardButton(
+                                                        text=btn.get("mj_native_label", "Действие"),
+                                                        callback_data=json.dumps({
+                                                            "action": "MJ_BUTTON",
+                                                            "id": btn.get("id")
+                                                        })
+                                                    )
+                                                )
 
-                elif action == "links_parse_off":
-                    # Выключаем парсинг ссылок
-                    await chat_service.update_chat_settings(chat, links_parse=False)
+                                        # Если есть кнопки, создаем инлайн-клавиатуру
+                                        if mj_buttons:
+                                            inline_markup = InlineKeyboardMarkup(inline_keyboard=[mj_buttons])
 
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Парсинг ссылок выключен")
-                    await callback.message.answer(
-                        "✅ Парсинг ссылок выключен.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-
-                elif action == "voice_answer_on":
-                    # Включаем ответы голосом
-                    await chat_service.update_chat_settings(chat, answer_to_voice=True)
-
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Ответы голосом включены")
-                    await callback.message.answer(
-                        "✅ Ответы голосом включены.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-
-                elif action == "voice_answer_off":
-                    # Выключаем ответы голосом
-                    await chat_service.update_chat_settings(chat, answer_to_voice=False)
-
-                    # Обновляем сообщение и отвечаем пользователю
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Ответы голосом выключены")
-                    await callback.message.answer(
-                        "✅ Ответы голосом выключены.",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-
-                elif action == "chat_page":
-                    # Переключаем страницу чатов
-                    page = data.get("page", 1)
-                    user.current_chat_list_page = page
-                    await user_repository.update(user)
-
-                    # Получаем обновленный список чатов
-                    chats, total_pages = await chat_service.get_chat_list(user, page)
-
-                    # Обновляем клавиатуру
-                    await callback.message.edit_reply_markup(
-                        reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index, page, total_pages)
-                    )
-
-                    await callback.answer(f"Страница {page}")
-
-                elif action == "select_chat":
-                    # Переключаемся на выбранный чат
-                    chat_index = data.get("chat_index")
-                    current_page = data.get("current_page", 1)
-
-                    # Переключаем чат
-                    selected_chat = await chat_service.switch_chat(user, chat_index)
-
-                    if selected_chat:
-                        await user_repository.update(user)
-
-                        # Обновляем клавиатуру
-                        chats, total_pages = await chat_service.get_chat_list(user, current_page)
-                        await callback.message.edit_reply_markup(
-                            reply_markup=get_chat_list_inline_keyboard(chats, user.current_chat_index, current_page,
-                                                                       total_pages)
-                        )
-
-                        await callback.answer(f"Выбран чат {chat_index}")
-                        await callback.message.answer(
-                            f"✅ Выбран чат {chat_index}" + (f" | {selected_chat.name}" if selected_chat.name else ""),
-                            parse_mode="Markdown",
-                            reply_markup={"keyboard": get_main_keyboard(user, selected_chat), "resize_keyboard": True}
-                        )
+                                    # Отправляем изображение с кнопками или без
+                                    await callback.message.answer_photo(
+                                        photo=image_url,
+                                        caption=result["response"].get("content", ""),
+                                        reply_markup=inline_markup
+                                    )
                     else:
-                        await callback.answer("Чат не найден")
+                        # Если изображения не сгенерированы, отправляем текстовый ответ
+                        content = result.get("response", {}).get("content", "Не удалось обработать кнопку")
+                        await callback.message.answer(content, parse_mode="Markdown")
 
-                elif action == "create_new_chat":
-                    # Запрашиваем имя для нового чата
-                    await callback.message.delete_reply_markup()
-                    await callback.answer("Создание нового чата")
-
-                    # Устанавливаем состояние пользователя
-                    user.state = "waiting_for_chat_name"
-                    await user_repository.update(user)
-
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке кнопки Midjourney: {e}", exc_info=True)
                     await callback.message.answer(
-                        "📝 Введите название для нового чата или отправьте `/cancel` для отмены:",
+                        "❌ Произошла ошибка при обработке кнопки Midjourney. Попробуйте еще раз.",
                         parse_mode="Markdown"
                     )
-
-                elif action == "select_referral_template":
-                    # Создаем реферальную программу с выбранным шаблоном
-                    template_id = data.get("template_id")
-
-                    # Создаем программу
-                    try:
-                        program = await referral_usecase.create_referral_program(user, template_id)
-
-                        # Получаем ссылки программы
-                        links = referral_usecase.get_referral_links(program)
-
-                        # Формируем сообщение с информацией о программе
-                        program_text = (
-                            f"✅ Реферальная программа успешно создана!\n\n"
-                            f"📊 *{program.template.name if program.template else 'Реферальная программа'}*\n\n"
-                            f"Код приглашения: `{links['code']}`\n\n"
-                            f"Ссылки для приглашения:\n"
-                            f"🌐 [Веб-ссылка]({links['web']})\n"
-                            f"📱 [Telegram]({links['telegram']})"
-                        )
-
-                        await callback.message.delete_reply_markup()
-                        await callback.message.answer(
-                            program_text,
-                            parse_mode="Markdown",
-                            disable_web_page_preview=True,
-                            reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                        )
-                    except Exception as e:
-                        logger.error(f"Ошибка при создании реферальной программы: {e}", exc_info=True)
-                        await callback.message.delete_reply_markup()
-                        await callback.message.answer(
-                            f"❌ Не удалось создать реферальную программу: {str(e)}",
-                            parse_mode="Markdown",
-                            reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                        )
-
-                elif action == "MJ_BUTTON":
-                    # Обработка кнопок Midjourney
-                    button_id = data.get("id")
-
-                    if not button_id:
-                        await callback.answer("Некорректный ID кнопки")
-                        return
-
-                    # Сообщаем о начале обработки
-                    await callback.answer("Обрабатываю запрос Midjourney...")
-                    await callback.message.answer("🎨 Обрабатываю ваш выбор, это может занять некоторое время...")
-
-                    # Вызываем метод для обработки кнопки Midjourney
-                    try:
-                        # В этом месте должен быть соответствующий usecase для кнопок Midjourney
-                        # Пока просто имитируем
-                        result = await image_generation_usecase.generate_image(
-                            user,
-                            chat,
-                            f"Применяю действие Midjourney (button_id: {button_id})"
-                        )
-
-                        # Обрабатываем результаты
-                        if "attachments" in result.get("response", {}):
-                            # Отправляем каждое сгенерированное изображение
-                            for attachment in result["response"]["attachments"]:
-                                if attachment.get("file", {}).get("type") == "IMAGE":
-                                    image_url = attachment["file"].get("url", "")
-                                    if not image_url and "path" in attachment["file"]:
-                                        image_url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
-
-                                    if image_url:
-                                        # Проверяем наличие кнопок Midjourney
-                                        inline_markup = None
-                                        if attachment.get("buttons") and any(
-                                                btn.get("type") == "MJ_BUTTON" for btn in attachment["buttons"]):
-                                            # Формируем кнопки для Midjourney
-                                            mj_buttons = []
-                                            for btn in attachment["buttons"]:
-                                                if btn.get("type") == "MJ_BUTTON":
-                                                    mj_buttons.append(
-                                                        InlineKeyboardButton(
-                                                            text=btn.get("mj_native_label", "Действие"),
-                                                            callback_data=json.dumps({
-                                                                "action": "MJ_BUTTON",
-                                                                "id": btn.get("id")
-                                                            })
-                                                        )
-                                                    )
-
-                                            # Если есть кнопки, создаем инлайн-клавиатуру
-                                            if mj_buttons:
-                                                inline_markup = InlineKeyboardMarkup(inline_keyboard=[mj_buttons])
-
-                                        # Отправляем изображение с кнопками или без
-                                        await callback.message.answer_photo(
-                                            photo=image_url,
-                                            caption=result.get("response", {}).get("content", ""),
-                                            reply_markup=inline_markup
-                                        )
-                        else:
-                            # Если изображения не сгенерированы, отправляем текстовый ответ
-                            content = result.get("response", {}).get("content", "Не удалось обработать кнопку")
-                            await callback.message.answer(content, parse_mode="Markdown")
-
-                    except Exception as e:
-                        logger.error(f"Ошибка при обработке кнопки Midjourney: {e}", exc_info=True)
-                        await callback.message.answer(
-                            "❌ Произошла ошибка при обработке кнопки Midjourney. Попробуйте еще раз.",
-                            parse_mode="Markdown"
-                        )
 
                 else:
                     await callback.answer("Неизвестное действие")
 
-            except Exception as e:
-                logger.error(f"Ошибка при обработке callback_query: {e}", exc_info=True)
-                await callback.answer("Произошла ошибка при обработке запроса")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке callback_query: {e}", exc_info=True)
+            await callback.answer("Произошла ошибка при обработке запроса")
 
-        # ==================== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ С УМНЫМ ОПРЕДЕЛЕНИЕМ НАМЕРЕНИЙ ====================
+            # ==================== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ С УМНЫМ ОПРЕДЕЛЕНИЕМ НАМЕРЕНИЙ ====================
 
-        @dp.message(F.text)
-        async def handle_text_message(message: Message):
-            """Обработка текстовых сообщений с умным определением намерения"""
-            try:
-                # Получаем или создаём пользователя и его текущий чат
-                user = await get_or_create_user(message)
+            @dp.message(F.text)
+            async def handle_text_message(message: Message):
+                """Обработка текстовых сообщений с умным определением намерения"""
+                try:
+                    # Получаем или создаём пользователя и его текущий чат
+                    user = await get_or_create_user(message)
 
-                # Проверяем, находится ли пользователь в каком-то состоянии
-                if user.state == "waiting_for_chat_name":
-                    # Пользователь вводит имя для нового чата
-                    if message.text.startswith("/cancel"):
-                        user.state = None
-                        await user_repository.update(user)
+                    # Проверяем, находится ли пользователь в каком-то состоянии
+                    if user.state == "waiting_for_chat_name":
+                        # Пользователь вводит имя для нового чата
+                        if message.text.startswith("/cancel"):
+                            user.state = None
+                            await user_repository.update(user)
+                            await message.answer(
+                                "❌ Создание нового чата отменено.",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, await get_or_create_chat(user))
+                            )
+                            return
+
+                        # Создаем новый чат с указанным именем
+                        chat_name = message.text.strip()
+                        if len(chat_name) > 50:  # Ограничиваем длину имени чата
+                            await message.answer(
+                                "❌ Слишком длинное название чата. Максимальная длина - 50 символов.",
+                                parse_mode="Markdown"
+                            )
+                            return
+
+                        # Создаем новый чат
+                        if chat_service:
+                            new_chat = await chat_service.create_new_chat(user, chat_name)
+                            user.state = None
+                            await user_repository.update(user)
+
+                            await message.answer(
+                                f"✅ Создан новый чат: {chat_name}",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, new_chat)
+                            )
+                        return
+
+                    # Проверяем, находится ли пользователь в режиме буфера
+                    elif user.state == "buffer_mode":
+                        if message.text.lower() in ["/cancel", "❌ отмена"]:
+                            user.state = None
+                            await user_repository.update(user)
+
+                            # Очищаем буфер
+                            chat = await get_or_create_chat(user)
+                            if buffer_message_usecase:
+                                buffer_message_usecase.clear_buffer(chat)
+
+                            await message.answer(
+                                "✅ Режим буфера отменен.",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+                            return
+
+                        elif message.text.lower() in ["/send_buffer", "📤 отправить буфер"]:
+                            # Отправляем содержимое буфера
+                            user.state = None
+                            await user_repository.update(user)
+
+                            chat = await get_or_create_chat(user)
+                            if buffer_message_usecase:
+                                try:
+                                    # Отправляем буфер
+                                    await message.chat.do(ChatAction.TYPING)
+                                    result = await buffer_message_usecase.send_buffer(user, chat)
+
+                                    # Обрабатываем ответ
+                                    if "response" in result and "content" in result["response"]:
+                                        await message.answer(
+                                            result["response"]["content"],
+                                            parse_mode="Markdown",
+                                            reply_markup=get_main_keyboard(user, chat)
+                                        )
+                                    else:
+                                        await message.answer(
+                                            "✅ Буфер отправлен, но нет ответа от сервера.",
+                                            parse_mode="Markdown",
+                                            reply_markup=get_main_keyboard(user, chat)
+                                        )
+                                except Exception as e:
+                                    logger.error(f"Ошибка при отправке буфера: {e}", exc_info=True)
+                                    await message.answer(
+                                        f"❌ Ошибка при отправке буфера: {str(e)}",
+                                        parse_mode="Markdown",
+                                        reply_markup=get_main_keyboard(user, chat)
+                                    )
+                            return
+
+                        # Добавляем сообщение в буфер
+                        chat = await get_or_create_chat(user)
+                        if buffer_message_usecase:
+                            await buffer_message_usecase.add_to_buffer(user, chat, message.text)
+                            await message.answer(
+                                "✅ Сообщение добавлено в буфер.",
+                                reply_markup=get_buffer_keyboard()
+                            )
+                        return
+
+                    # Проверяем, не является ли сообщение командой клавиатуры
+                    if message.text == "🔄 Новый чат":
+                        # Создаем новый чат с текущей моделью
+                        chat = await get_or_create_chat(user)
+                        await chat_session_usecase.gateway.create_new_chat(user, chat)
+                        chat.reset_context_counter()
+                        await chat_repository.update(chat)
+
                         await message.answer(
-                            "❌ Создание нового чата отменено.",
+                            f"✅ Создан новый чат с моделью {chat.bothub_chat_model or 'по умолчанию'}",
                             parse_mode="Markdown",
-                            reply_markup={
-                                "keyboard": get_main_keyboard(user, await chat_service.get_or_create_chat(user)),
-                                "resize_keyboard": True}
+                            reply_markup=get_main_keyboard(user, chat)
                         )
                         return
 
-                    # Создаем новый чат с указанным именем
-                    chat_name = message.text.strip()
-                    if len(chat_name) > 50:  # Ограничиваем длину имени чата
+                    elif message.text == "🎨 Генерация изображений":
+                        # Запрашиваем промпт для генерации изображения
                         await message.answer(
-                            "❌ Слишком длинное название чата. Максимальная длина - 50 символов.",
+                            "🎨 Введите описание изображения, которое хотите создать:",
                             parse_mode="Markdown"
                         )
                         return
 
-                    # Создаем новый чат
-                    new_chat = await chat_service.create_new_chat(user, chat_name)
-                    user.state = None
-                    await user_repository.update(user)
+                    elif message.text.startswith("🔍 Поиск в интернете"):
+                        if not web_search_usecase:
+                            await message.answer(
+                                "❌ Функция веб-поиска временно недоступна.",
+                                parse_mode="Markdown"
+                            )
+                            return
 
-                    await message.answer(
-                        f"✅ Создан новый чат: {chat_name}",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, new_chat), "resize_keyboard": True}
-                    )
-                    return
+                        # Переключаем статус веб-поиска
+                        chat = await get_or_create_chat(user)
+                        current_status = await web_search_usecase.gateway.get_web_search(user, chat)
+                        new_status = not current_status
 
-                # Проверяем, не является ли сообщение командой клавиатуры
-                if message.text == "🔄 Новый чат":
-                    # Создаем новый чат с текущей моделью
-                    chat = await chat_service.get_or_create_chat(user)
-                    await chat_session_usecase.gateway.create_new_chat(user, chat)
-                    chat.reset_context_counter()
-                    await chat_repository.update(chat)
+                        await web_search_usecase.toggle_web_search(user, chat, new_status)
 
-                    await message.answer(
-                        f"✅ Создан новый чат с моделью {chat.bothub_chat_model or 'по умолчанию'}",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-                    return
+                        status_text = "включен" if new_status else "выключен"
+                        await message.answer(
+                            f"🔍 Веб-поиск {status_text}",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+                        return
 
-                elif message.text == "🎨 Генерация изображений":
-                    # Запрашиваем промпт для генерации изображения
-                    await message.answer(
-                        "🎨 Введите описание изображения, которое хотите создать:",
-                        parse_mode="Markdown"
-                    )
-                    return
+                    elif message.text == "⚙️ Инструменты":
+                        # Отображаем меню инструментов
+                        await message.answer(
+                            "⚙️ Инструменты:\n\n"
+                            "/gpt_config - Настройка моделей для текста\n"
+                            "/image_generation_config - Настройка моделей для изображений\n"
+                            "/context - Управление контекстом\n"
+                            "/web_search - Управление веб-поиском\n"
+                            "/system_prompt - Управление системным промптом\n"
+                            "/formula - Управление конвертацией формул\n"
+                            "/scan_links - Управление парсингом ссылок\n"
+                            "/voice - Управление ответами голосом\n"
+                            "/chat_list - Просмотр списка чатов",
+                            parse_mode="Markdown"
+                        )
+                        return
 
-                elif message.text.startswith("🔍 Поиск в интернете"):
-                    # Переключаем статус веб-поиска
-                    chat = await chat_service.get_or_create_chat(user)
-                    current_status = await web_search_usecase.gateway.get_web_search(user, chat)
-                    new_status = not current_status
-
-                    await web_search_usecase.toggle_web_search(user, chat, new_status)
-
-                    status_text = "включен" if new_status else "выключен"
-                    await message.answer(
-                        f"🔍 Веб-поиск {status_text}",
-                        parse_mode="Markdown",
-                        reply_markup={"keyboard": get_main_keyboard(user, chat), "resize_keyboard": True}
-                    )
-                    return
-
-                elif message.text == "⚙️ Инструменты":
-                    # Отображаем меню инструментов
-                    await message.answer(
-                        "⚙️ Инструменты:\n\n"
-                        "/gpt_config - Настройка моделей для текста\n"
-                        "/image_generation_config - Настройка моделей для изображений\n"
-                        "/context - Управление контекстом\n"
-                        "/web_search - Управление веб-поиском\n"
-                        "/system_prompt - Управление системным промптом\n"
-                        "/formula - Управление конвертацией формул\n"
-                        "/scan_links - Управление парсингом ссылок\n"
-                        "/voice - Управление ответами голосом\n"
-                        "/chat_list - Просмотр списка чатов",
-                        parse_mode="Markdown"
-                    )
-                    return
-
-                elif message.text == "📋 Буфер":
-                    # Переходим в режим буфера
-                    user.state = "buffer_mode"
-                    await user_repository.update(user)
-
-                    await message.answer(
-                        "📋 Режим буфера активирован.\n\n"
-                        "Отправьте сообщения и файлы, которые нужно добавить в буфер.\n"
-                        "Когда закончите, отправьте команду `/send_buffer`, чтобы отправить все сообщения из буфера.\n"
-                        "Для отмены отправьте `/cancel`.",
-                        parse_mode="Markdown"
-                    )
-                    return
-
-                # Проверяем, не является ли сообщение кнопкой чата
-                chat_index = chat_service.parse_chat_button(message.text)
-                if chat_index is not None:
-                    # Переключаемся на выбранный чат
-                    selected_chat = await chat_service.switch_chat(user, chat_index)
-
-                    if selected_chat:
+                    elif message.text == "📋 Буфер":
+                        # Переходим в режим буфера
+                        user.state = "buffer_mode"
                         await user_repository.update(user)
 
+                        # Очищаем буфер
+                        chat = await get_or_create_chat(user)
+                        if buffer_message_usecase:
+                            buffer_message_usecase.clear_buffer(chat)
+
                         await message.answer(
-                            f"✅ Выбран чат {chat_index}" + (f" | {selected_chat.name}" if selected_chat.name else ""),
+                            "📋 Режим буфера активирован.\n\n"
+                            "Отправьте сообщения и файлы, которые нужно добавить в буфер.\n"
+                            "Когда закончите, нажмите кнопку 'Отправить буфер'.\n"
+                            "Для отмены нажмите 'Отмена'.",
                             parse_mode="Markdown",
-                            reply_markup={"keyboard": get_main_keyboard(user, selected_chat), "resize_keyboard": True}
+                            reply_markup=get_buffer_keyboard()
+                        )
+                        return
+
+                    # Проверяем, не является ли сообщение кнопкой чата
+                    chat_emojis = {"1️⃣": 1, "2️⃣": 2, "3️⃣": 3, "4️⃣": 4, "📝": 5}
+                    for emoji, index in chat_emojis.items():
+                        if message.text.startswith(emoji):
+                            # Переключаемся на выбранный чат
+                            user.current_chat_index = index
+                            await user_repository.update(user)
+
+                            chat = await get_or_create_chat(user)
+
+                            await message.answer(
+                                f"✅ Выбран чат {index}" + (f" | {chat.name}" if chat.name else ""),
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+                            return
+
+                    # Сообщаем пользователю, что бот печатает
+                    await message.chat.do(ChatAction.TYPING)
+
+                    # Получаем текущий чат пользователя
+                    chat = await get_or_create_chat(user)
+
+                    # Определяем намерение пользователя
+                    intent, intent_data = intent_detection_service.detect_intent(
+                        message.text,
+                        str(user.id),  # Используем ID пользователя для контекста
+                        None  # Пока не используем историю чата
+                    )
+
+                    # Обновляем контекст намерений пользователя
+                    intent_detection_service.update_user_context(str(user.id), intent, intent_data)
+
+                    # Обрабатываем различные намерения
+                    if intent == IntentType.IMAGE_GENERATION and image_generation_usecase:
+                        # Генерация изображения
+                        prompt = intent_data.get("prompt", message.text)
+
+                        try:
+                            result = await image_generation_usecase.generate_image(user, chat, prompt)
+
+                            # Проверяем, есть ли вложения в ответе
+                            if "response" in result and "attachments" in result["response"]:
+                                # Отправляем каждое сгенерированное изображение
+                                for attachment in result["response"]["attachments"]:
+                                    if "file" in attachment and attachment["file"].get("type") == "IMAGE":
+                                        image_url = attachment["file"].get("url", "")
+                                        if not image_url and "path" in attachment["file"]:
+                                            image_url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
+
+                                        if image_url:
+                                            # Проверяем наличие кнопок Midjourney
+                                            inline_markup = None
+                                            if "buttons" in attachment and any(
+                                                    btn.get("type") == "MJ_BUTTON" for btn in attachment["buttons"]):
+                                                # Формируем кнопки для Midjourney
+                                                mj_buttons = []
+                                                for btn in attachment["buttons"]:
+                                                    if btn.get("type") == "MJ_BUTTON":
+                                                        mj_buttons.append(
+                                                            InlineKeyboardButton(
+                                                                text=btn.get("mj_native_label", "Действие"),
+                                                                callback_data=json.dumps({
+                                                                    "action": "MJ_BUTTON",
+                                                                    "id": btn.get("id")
+                                                                })
+                                                            )
+                                                        )
+
+                                                # Если есть кнопки, создаем инлайн-клавиатуру
+                                                if mj_buttons:
+                                                    inline_markup = InlineKeyboardMarkup(inline_keyboard=[mj_buttons])
+
+                                            # Отправляем изображение с кнопками или без
+                                            await message.answer_photo(
+                                                photo=image_url,
+                                                caption=result["response"].get("content", ""),
+                                                reply_markup=inline_markup
+                                            )
+
+                            # Если есть текстовый ответ, но нет изображений
+                            elif "response" in result and "content" in result["response"] and result["response"][
+                                "content"]:
+                                await message.answer(
+                                    result["response"]["content"],
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard(user, chat)
+                                )
+                            else:
+                                await message.answer(
+                                    "Не удалось сгенерировать изображение. Попробуйте изменить запрос.",
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard(user, chat)
+                                )
+                        except Exception as e:
+                            logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
+                            await message.answer(
+                                f"❌ Ошибка при генерации изображения: {str(e)}",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+
+                    elif intent == IntentType.WEB_SEARCH and web_search_usecase:
+                        # Веб-поиск
+                        query = intent_data.get("query", message.text)
+
+                        try:
+                            result = await web_search_usecase.search(user, chat, query)
+
+                            if "response" in result and "content" in result["response"]:
+                                await message.answer(
+                                    result["response"]["content"],
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard(user, chat)
+                                )
+                            else:
+                                await message.answer(
+                                    "Не удалось найти информацию по запросу. Попробуйте изменить запрос.",
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard(user, chat)
+                                )
+                        except Exception as e:
+                            logger.error(f"Ошибка при веб-поиске: {e}", exc_info=True)
+                            await message.answer(
+                                f"❌ Ошибка при поиске информации: {str(e)}",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+
+                    else:
+                        # Обычный чат
+                        try:
+                            result = await chat_session_usecase.send_message(user, chat, message.text)
+
+                            if "response" in result and "content" in result["response"]:
+                                # Проверяем длину сообщения
+                                content = result["response"]["content"]
+                                if len(content) > 4000:
+                                    # Разбиваем длинное сообщение на части
+                                    await send_long_message(message, content)
+                                else:
+                                    await message.answer(
+                                        content,
+                                        parse_mode="Markdown",
+                                        reply_markup=get_main_keyboard(user, chat)
+                                    )
+
+                                # Если есть информация о токенах, отправляем её
+                                if "tokens" in result:
+                                    await message.answer(
+                                        f"Использовано токенов: {result['tokens']}",
+                                        parse_mode="Markdown"
+                                    )
+                            else:
+                                await message.answer(
+                                    "Не удалось получить ответ от сервера.",
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard(user, chat)
+                                )
+                        except Exception as e:
+                            logger.error(f"Ошибка при отправке сообщения: {e}", exc_info=True)
+                            await message.answer(
+                                f"❌ Ошибка при обработке сообщения: {str(e)}",
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+
+                except Exception as e:
+                    logger.error(f"Общая ошибка при обработке текстового сообщения: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Произошла ошибка при обработке сообщения. Попробуйте еще раз.",
+                        parse_mode="Markdown"
+                    )
+
+            # ==================== ОБРАБОТЧИКИ МЕДИА ФАЙЛОВ ====================
+
+            @dp.message(F.voice | F.audio)
+            async def handle_voice_message(message: Message):
+                """Обработка голосовых сообщений"""
+                try:
+                    user = await get_or_create_user(message)
+                    chat = await get_or_create_chat(user)
+
+                    # Проверяем режим буфера
+                    if user.state == "buffer_mode" and buffer_message_usecase:
+                        # Скачиваем файл
+                        file_id = message.voice.file_id if message.voice else message.audio.file_id
+                        file = await message.bot.get_file(file_id)
+                        file_path = file.file_path
+                        file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                        # Добавляем в буфер
+                        await buffer_message_usecase.add_to_buffer(
+                            user,
+                            chat,
+                            None,  # Текст будет получен при распознавании
+                            file_url,
+                            f"voice_{file_id}.ogg"
+                        )
+
+                        await message.answer(
+                            "✅ Голосовое сообщение добавлено в буфер.",
+                            reply_markup=get_buffer_keyboard()
+                        )
+                        return
+
+                    # Сообщаем о начале обработки
+                    await message.chat.do(ChatAction.TYPING)
+
+                    # Получаем файл
+                    file_id = message.voice.file_id if message.voice else message.audio.file_id
+                    file = await message.bot.get_file(file_id)
+                    file_path = file.file_path
+                    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                    # Отправляем голосовое сообщение в BotHub
+                    result = await chat_session_usecase.send_message(user, chat, "", [file_url])
+
+                    if "response" in result and "content" in result["response"]:
+                        await message.answer(
+                            result["response"]["content"],
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
                         )
                     else:
                         await message.answer(
-                            "❌ Чат не найден.",
-                            parse_mode="Markdown"
+                            "Не удалось обработать голосовое сообщение.",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
                         )
-                    return
 
-                # Сообщаем пользователю, что бот печатает
-                await message.chat.do(ChatAction.TYPING)
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Произошла ошибка при обработке голосового сообщения.",
+                        parse_mode="Markdown"
+                    )
 
-                # Получаем текущий чат пользователя
-                chat = await chat_service.get_or_create_chat(user)
+            @dp.message(F.photo | F.document)
+            async def handle_media_message(message: Message):
+                """Обработка изображений и документов"""
+                try:
+                    user = await get_or_create_user(message)
+                    chat = await get_or_create_chat(user)
 
-                # Определяем намерение пользователя
-                intent, intent_data = intent_detection_service.detect_intent(
-                    message.text,
-                    str(user.id),  # Используем ID пользователя для контекста
-                    None  # Пока не используем историю чата
-                )
+                    # Проверяем режим буфера
+                    if user.state == "buffer_mode" and buffer_message_usecase:
+                        # Скачиваем файл
+                        if message.photo:
+                            file_id = message.photo[-1].file_id
+                            file_name = f"photo_{file_id}.jpg"
+                        else:
+                            file_id = message.document.file_id
+                            file_name = message.document.file_name or f"document_{file_id}"
 
-                # Обновляем контекст намерений пользователя
-                intent_detection_service.update_user_context(str(user.i  # src/delivery/telegram/handlers.py
+                        file = await message.bot.get_file(file_id)
+                        file_path = file.file_path
+                        file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                        # Добавляем в буфер
+                        await buffer_message_usecase.add_to_buffer(
+                            user,
+                            chat,
+                            message.caption,
+                            file_url,
+                            file_name
+                        )
+
+                        await message.answer(
+                            "✅ Файл добавлен в буфер.",
+                            reply_markup=get_buffer_keyboard()
+                        )
+                        return
+
+                    # Сообщаем о начале обработки
+                    await message.chat.do(ChatAction.TYPING)
+
+                    # Получаем файл
+                    if message.photo:
+                        file_id = message.photo[-1].file_id
+                        file_name = f"photo_{file_id}.jpg"
+                    else:
+                        file_id = message.document.file_id
+                        file_name = message.document.file_name or f"document_{file_id}"
+
+                    file = await message.bot.get_file(file_id)
+                    file_path = file.file_path
+                    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                    # Отправляем файл в BotHub
+                    result = await chat_session_usecase.send_message(user, chat, message.caption or "", [file_url])
+
+                    if "response" in result and "content" in result["response"]:
+                        await message.answer(
+                            result["response"]["content"],
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+                    else:
+                        await message.answer(
+                            "Не удалось обработать файл.",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке файла: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Произошла ошибка при обработке файла.",
+                        parse_mode="Markdown"
+                    )
+
+            @dp.message(F.video | F.video_note)
+            async def handle_video_message(message: Message):
+                """Обработка видео сообщений"""
+                try:
+                    user = await get_or_create_user(message)
+                    chat = await get_or_create_chat(user)
+
+                    # Проверяем режим буфера
+                    if user.state == "buffer_mode" and buffer_message_usecase:
+                        # Скачиваем файл
+                        if message.video:
+                            file_id = message.video.file_id
+                            file_name = f"video_{file_id}.mp4"
+                        else:
+                            file_id = message.video_note.file_id
+                            file_name = f"video_note_{file_id}.mp4"
+
+                        file = await message.bot.get_file(file_id)
+                        file_path = file.file_path
+                        file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                        # Добавляем в буфер
+                        await buffer_message_usecase.add_to_buffer(
+                            user,
+                            chat,
+                            message.caption if message.video else None,
+                            file_url,
+                            file_name
+                        )
+
+                        await message.answer(
+                            "✅ Видео добавлено в буфер.",
+                            reply_markup=get_buffer_keyboard()
+                        )
+                        return
+
+                    # Сообщаем о начале обработки
+                    await message.chat.do(ChatAction.TYPING)
+
+                    # Получаем файл
+                    if message.video:
+                        file_id = message.video.file_id
+                        file_name = f"video_{file_id}.mp4"
+                        caption = message.caption or ""
+                    else:
+                        file_id = message.video_note.file_id
+                        file_name = f"video_note_{file_id}.mp4"
+                        caption = ""
+
+                    file = await message.bot.get_file(file_id)
+                    file_path = file.file_path
+                    file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file_path}"
+
+                    # Отправляем видео в BotHub
+                    result = await chat_session_usecase.send_message(user, chat, caption, [file_url])
+
+                    if "response" in result and "content" in result["response"]:
+                        await message.answer(
+                            result["response"]["content"],
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+                    else:
+                        await message.answer(
+                            "Не удалось обработать видео.",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке видео: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Произошла ошибка при обработке видео.",
+                        parse_mode="Markdown"
+                    )
+
+                return dp
