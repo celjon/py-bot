@@ -4,6 +4,7 @@ from .config_handlers import register_config_handlers
 from .account_handlers import register_account_handlers
 from .chat_handlers import register_chat_handlers
 from .message_handlers import register_message_handlers
+from .context_handlers import register_context_handlers
 
 
 def setup_handlers(
@@ -37,6 +38,14 @@ def setup_handlers(
     register_account_handlers(
         main_router,
         account_connection_usecase,
+        user_repository,
+        chat_repository
+    )
+
+    # Регистрируем обработчики контекста
+    register_context_handlers(
+        main_router,
+        chat_session_usecase,
         user_repository,
         chat_repository
     )

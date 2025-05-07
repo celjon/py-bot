@@ -221,20 +221,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 parse_mode="Markdown"
             )
 
-    # Отладочный обработчик, который будет отвечать на любое входящее сообщение
-    # Можно использовать для проверки, что маршрутизация работает
-    @router.message()
-    async def handle_any_message(message: Message):
-        try:
-            logger.info(f"Получено сообщение любого типа от {message.from_user.id}")
 
-            if hasattr(message, 'text') and message.text:
-                await message.answer(f"Получил ваше сообщение: {message.text}")
-            else:
-                await message.answer("Получил ваше сообщение, но это не текст")
-
-        except Exception as e:
-            logger.error(f"Ошибка при обработке любого сообщения: {e}", exc_info=True)
 
     @router.message(F.voice)
     async def handle_voice_message(message: Message):
@@ -248,6 +235,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             bot = message.bot
 
             # Сообщаем пользователю, что бот обрабатывает голосовое сообщение
+            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
             processing_msg = await message.answer(
                 "🎤 Обрабатываю голосовое сообщение...",
                 parse_mode="Markdown"
@@ -261,35 +249,96 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             downloaded_file = await bot.download_file(file_path)
 
             # Сохраняем во временный файл
-            temp_file = f"/tmp/voice_{message.voice.file_id}.ogg"
+            import os
+            temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_file = os.path.join(temp_dir, f"voice_{message.voice.file_id}.ogg")
+
             with open(temp_file, "wb") as f:
                 f.write(downloaded_file.read())
 
             # Транскрибируем голосовое сообщение
-            # В полной версии будет:
-            # transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file)
+            try:
+                transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file)
 
-            # Временная реализация:
-            transcribed_text = "Текст из голосового сообщения (демо)"
+                # Удаляем сообщение о обработке
+                await bot.delete_message(message.chat.id, processing_msg.message_id)
 
-            # Удаляем сообщение о обработке
-            await bot.delete_message(message.chat.id, processing_msg.message_id)
+                # Отправляем текст транскрибирования
+                await message.answer(
+                    f"🔊 → 📝 Транскрибировано:\n\n{transcribed_text}",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
 
-            # Отправляем текст транскрибирования
-            await message.answer(
-                f"🔊 → 📝 Текст из голосового сообщения:\n\n{transcribed_text}",
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard(user, chat)
-            )
+                # Если выбран специальный режим транскрибирования (например, tool == "transcribe"),
+                # то просто показываем текст и не отправляем запрос к модели
+                special_tool = getattr(chat, 'bothub_chat_model', '') == 'transcribe'
 
-            # В полной версии здесь будет отправка транскрибированного текста в BotHub
+                if not special_tool:
+                    # Отправляем транскрибированный текст в BotHub API
+                    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+                    # Проверяем, есть ли у чата ID в BotHub
+                    if not chat.bothub_chat_id:
+                        # Создаем новый чат
+                        await chat_session_usecase.create_new_chat(user, chat)
+
+                    # Отправляем сообщение и получаем ответ
+                    result = await chat_session_usecase.send_message(user, chat, transcribed_text)
+
+                    # Если контекст запоминается, увеличиваем счетчик контекста
+                    if chat.context_remember:
+                        chat.increment_context_counter()
+                        await chat_repository.update(chat)
+
+                    # Обрабатываем ответ от BotHub
+                    if "response" in result and "content" in result["response"]:
+                        content = result["response"]["content"]
+
+                        # Если сообщение слишком длинное, разбиваем его
+                        if len(content) > 4000:
+                            await send_long_message(message, content)
+                        else:
+                            await message.answer(
+                                content,
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+
+                        # Если есть информация о токенах, отправляем её
+                        if "tokens" in result:
+                            tokens_info = f"`-{result['tokens']} caps`"
+
+                            # Добавляем информацию о контексте, если он включен
+                            if chat.context_remember:
+                                tokens_info += f"\n\nПродолжить: /continue\n\nСбросить контекст: /reset"
+
+                            await message.answer(
+                                tokens_info,
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard(user, chat)
+                            )
+
+            except Exception as transcribe_error:
+                logger.error(f"Ошибка при транскрибировании: {transcribe_error}", exc_info=True)
+                await bot.delete_message(message.chat.id, processing_msg.message_id)
+                await message.answer(
+                    f"❌ Не удалось обработать голосовое сообщение: {str(transcribe_error)}",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
 
             # Удаляем временный файл
-            os.remove(temp_file)
+            try:
+                os.remove(temp_file)
+            except Exception as file_error:
+                logger.error(f"Ошибка при удалении файла: {file_error}")
 
         except Exception as e:
-            logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+            logger.error(f"Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
             await message.answer(
                 "❌ Произошла ошибка при обработке голосового сообщения.",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
             )

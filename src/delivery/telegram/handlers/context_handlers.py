@@ -1,4 +1,3 @@
-# Добавление в src/delivery/telegram/handlers/context_handlers.py
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -11,7 +10,7 @@ from .base_handlers import get_or_create_user, get_or_create_chat
 logger = logging.getLogger(__name__)
 
 
-def register_context_handlers(router: Router, chat_service, user_repository, chat_repository):
+def register_context_handlers(router: Router, chat_session_usecase, user_repository, chat_repository):
     """Регистрация обработчиков для управления контекстом"""
 
     @router.message(Command("context"))
@@ -36,7 +35,7 @@ def register_context_handlers(router: Router, chat_service, user_repository, cha
                 parse_mode="Markdown"
             )
 
-    @router.callback_query(lambda c: c.data and json.loads(c.data).get("a") == "context_on")
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("t") == "ctx" and json.loads(c.data).get("a") == "on")
     async def handle_context_on(callback: CallbackQuery):
         """Обработка включения контекста"""
         try:
@@ -47,14 +46,16 @@ def register_context_handlers(router: Router, chat_service, user_repository, cha
             chat.context_remember = True
             await chat_repository.update(chat)
 
+            # Создаем новый чат с включенным контекстом
+            await chat_session_usecase.create_new_chat(user, chat)
+
             # Закрываем инлайн клавиатуру
-            await callback.message.delete_reply_markup()
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer("Запоминание контекста включено")
 
             # Отправляем сообщение
             await callback.message.answer(
-                "✅ Запоминание контекста включено. Начните новый чат с помощью команды /reset, "
-                "чтобы изменения вступили в силу.",
+                "✅ Запоминание контекста включено. Теперь я буду помнить историю нашего диалога.",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(user, chat)
             )
@@ -65,7 +66,7 @@ def register_context_handlers(router: Router, chat_service, user_repository, cha
             logger.error(f"Ошибка при включении контекста: {e}", exc_info=True)
             await callback.answer("Произошла ошибка при включении контекста")
 
-    @router.callback_query(lambda c: c.data and json.loads(c.data).get("a") == "context_off")
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("t") == "ctx" and json.loads(c.data).get("a") == "off")
     async def handle_context_off(callback: CallbackQuery):
         """Обработка выключения контекста"""
         try:
@@ -77,14 +78,16 @@ def register_context_handlers(router: Router, chat_service, user_repository, cha
             chat.reset_context_counter()
             await chat_repository.update(chat)
 
+            # Создаем новый чат с выключенным контекстом
+            await chat_session_usecase.create_new_chat(user, chat)
+
             # Закрываем инлайн клавиатуру
-            await callback.message.delete_reply_markup()
+            await callback.message.edit_reply_markup(reply_markup=None)
             await callback.answer("Запоминание контекста выключено")
 
             # Отправляем сообщение
             await callback.message.answer(
-                "✅ Запоминание контекста выключено. Начните новый чат с помощью команды /reset, "
-                "чтобы изменения вступили в силу.",
+                "✅ Запоминание контекста выключено. Теперь каждое сообщение будет рассматриваться отдельно.",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(user, chat)
             )

@@ -85,3 +85,26 @@ class ChatSessionUseCase:
         logger.info(f"Сброс контекста чата {chat.bothub_chat_id} для пользователя {user.id}")
         await self.gateway.reset_context(user, chat)
         chat.reset_context_counter()
+
+    async def transcribe_voice(self, user: User, chat: Chat, file_path: str) -> str:
+        """
+        Транскрибирование голосового сообщения
+
+        Args:
+            user: Пользователь
+            chat: Чат
+            file_path: Путь к аудиофайлу
+
+        Returns:
+            str: Транскрибированный текст
+        """
+        logger.info(f"Транскрибирование голосового сообщения для пользователя {user.id}")
+
+        try:
+            return await self.gateway.transcribe_voice(user, chat, file_path)
+        except Exception as e:
+            logger.error(f"Ошибка при транскрибировании: {str(e)}")
+            if "502 Bad Gateway" in str(e):
+                raise Exception("Сервер BotHub временно недоступен. Пожалуйста, попробуйте позже.")
+            else:
+                raise Exception(f"Не удалось преобразовать голосовое сообщение в текст: {str(e)}")

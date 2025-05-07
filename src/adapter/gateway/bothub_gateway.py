@@ -320,3 +320,22 @@ class BothubGateway:
 
         web_url = settings.BOTHUB_WEB_URL
         return f"{web_url}?telegram-connection-token={token}"
+
+    async def transcribe_voice(self, user: User, chat: Chat, file_path: str) -> str:
+        """
+        Транскрибирование голосового сообщения
+
+        Args:
+            user: Пользователь
+            chat: Чат
+            file_path: Путь к аудиофайлу
+
+        Returns:
+            str: Транскрибированный текст
+        """
+        access_token = await self.get_access_token(user)
+        try:
+            return await self.client.whisper(access_token, file_path)
+        except Exception as e:
+            logger.error(f"Ошибка при транскрибировании: {str(e)}")
+            raise Exception(f"Не удалось транскрибировать голосовое сообщение: {str(e)}")
