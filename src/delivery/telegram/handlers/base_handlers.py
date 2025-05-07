@@ -3,7 +3,7 @@ import json
 from aiogram.types import Message
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
-
+import aiohttp
 logger = logging.getLogger(__name__)
 
 async def get_or_create_user(message: Message, user_repository):
@@ -103,3 +103,34 @@ async def download_file_custom(token, file_path, api_url):
                 raise Exception(f"Ошибка при скачивании файла: {response.status}")
 
             return await response.read()
+
+
+# Исправленная функция для скачивания файла
+async def download_voice_file(bot, file_id, temp_file_path):
+    try:
+        # Получаем информацию о файле
+        file_info = await bot.get_file(file_id)
+
+        # Получаем настройки
+        from src.config.settings import get_settings
+        settings = get_settings()
+
+        # Формируем корректный URL для скачивания
+        api_url = settings.TELEGRAM_API_URL.rstrip('/')
+        file_path = file_info.file_path.lstrip('/')
+        file_url = f"{api_url}/file/bot{bot.token}/{file_path}"
+
+        # Скачиваем файл
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url) as response:
+                if response.status != 200:
+                    raise Exception(f"Не удалось скачать файл: HTTP {response.status}")
+
+                # Сохраняем содержимое файла
+                with open(temp_file_path, "wb") as f:
+                    f.write(await response.read())
+
+        return temp_file_path
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании файла: {e}", exc_info=True)
+        raise
