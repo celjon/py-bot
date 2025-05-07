@@ -75,3 +75,31 @@ async def send_long_message(message: Message, content: str, parse_mode: str = "M
 
     for part in parts:
         await message.answer(part, parse_mode=parse_mode)
+
+
+async def download_file_custom(token, file_path, api_url):
+    """
+    Скачивание файла из Telegram API
+
+    Args:
+        token: Токен бота
+        file_path: Путь к файлу от API
+        api_url: URL API сервера
+
+    Returns:
+        bytes: Содержимое файла
+    """
+    import aiohttp
+
+    # Формируем правильный URL файла
+    # Заменяем двойные слеши на одинарные
+    file_url = f"{api_url}/file/bot{token}/{file_path}"
+    file_url = file_url.replace("//", "/")
+    file_url = file_url.replace(":/", "://")  # Восстанавливаем протокол
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file_url) as response:
+            if response.status != 200:
+                raise Exception(f"Ошибка при скачивании файла: {response.status}")
+
+            return await response.read()

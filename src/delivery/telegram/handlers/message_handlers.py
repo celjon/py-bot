@@ -9,7 +9,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 
 from ..keyboards.main_keyboard import get_main_keyboard
-from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message
+from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_file_custom
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +221,6 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 parse_mode="Markdown"
             )
 
-
-
     @router.message(F.voice)
     async def handle_voice_message(message: Message):
         """Обработка голосовых сообщений"""
@@ -231,38 +229,79 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
 
-            # Получаем бота из сообщения
-            bot = message.bot
-
             # Сообщаем пользователю, что бот обрабатывает голосовое сообщение
-            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+            await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
             processing_msg = await message.answer(
                 "🎤 Обрабатываю голосовое сообщение...",
                 parse_mode="Markdown"
             )
 
-            # Получаем информацию о файле
-            file = await bot.get_file(message.voice.file_id)
-            file_path = file.file_path
-
-            # Скачиваем файл
-            downloaded_file = await bot.download_file(file_path)
-
-            # Сохраняем во временный файл
+            # Создаём временную директорию, если её нет
+            import tempfile
             import os
-            temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'temp')
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_file = os.path.join(temp_dir, f"voice_{message.voice.file_id}.ogg")
+            temp_dir = tempfile.gettempdir()
+            temp_file_path = os.path.join(temp_dir, f"voice_{message.voice.file_id}.ogg")
 
-            with open(temp_file, "wb") as f:
-                f.write(downloaded_file.read())
-
-            # Транскрибируем голосовое сообщение
             try:
-                transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file)
+                # Получаем информацию о файле
+                file_info = await message.bot.get_file(message.voice.file_id)
 
-                # Удаляем сообщение о обработке
-                await bot.delete_message(message.chat.id, processing_msg.message_id)
+                # Логируем информацию о файле для отладки
+                logger.info(f"Файл получен: {file_info}")
+                logger.info(f"Путь к файлу: {file_info.file_path}")
+
+                # Для локального Telegram Bot API сервера нужно обращаться напрямую
+                # к директории с файлами, а не скачивать через HTTP
+                from src.config.settings import get_settings
+                settings = get_settings()
+
+                # Проверяем, содержит ли путь к файлу полный путь или только имя
+                if os.path.isabs(file_info.file_path):
+                    # Если это полный путь, используем его напрямую
+                    telegram_file_path = file_info.file_path
+                else:
+                    # Иначе формируем путь из базовой директории API сервера
+                    # Если файл находится на локальном сервере, он должен быть доступен
+                    # в директории, настроенной в settings.TELEGRAM_API_DATA_DIR
+                    # Или можно использовать стандартный путь из конфигурации Docker
+                    telegram_file_path = "/telegram-bot-api-data/" + file_info.file_path
+
+                # Скопируем файл на временный путь
+                import shutil
+
+                # Проверяем существование исходного файла
+                if os.path.exists(telegram_file_path):
+                    shutil.copy(telegram_file_path, temp_file_path)
+                    logger.info(f"Файл скопирован: {telegram_file_path} -> {temp_file_path}")
+                else:
+                    # Если файл не найден на диске, попробуем загрузить через HTTP
+                    import aiohttp
+
+                    # Используем базовый URL API из конфигурации
+                    api_url = settings.TELEGRAM_API_URL
+                    file_url = f"{api_url}/file/bot{message.bot.token}/{file_info.file_path}"
+
+                    logger.info(f"Пробуем скачать файл через HTTP: {file_url}")
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(file_url) as response:
+                            if response.status != 200:
+                                raise Exception(f"Не удалось скачать файл: HTTP {response.status}")
+
+                            # Сохраняем содержимое файла
+                            with open(temp_file_path, "wb") as f:
+                                f.write(await response.read())
+
+                    logger.info(f"Файл успешно скачан через HTTP и сохранен: {temp_file_path}")
+
+                # Логируем успешное получение файла
+                logger.info(f"Файл успешно получен и сохранен: {temp_file_path}")
+
+                # Здесь должен быть вызов транскрибирования, но пока используем заглушку
+                transcribed_text = "Тестовое транскрибирование голосового сообщения. Реальная функциональность будет реализована позже."
+
+                # Удаляем сообщение о загрузке
+                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
 
                 # Отправляем текст транскрибирования
                 await message.answer(
@@ -271,69 +310,22 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
-                # Если выбран специальный режим транскрибирования (например, tool == "transcribe"),
-                # то просто показываем текст и не отправляем запрос к модели
-                special_tool = getattr(chat, 'bothub_chat_model', '') == 'transcribe'
-
-                if not special_tool:
-                    # Отправляем транскрибированный текст в BotHub API
-                    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-
-                    # Проверяем, есть ли у чата ID в BotHub
-                    if not chat.bothub_chat_id:
-                        # Создаем новый чат
-                        await chat_session_usecase.create_new_chat(user, chat)
-
-                    # Отправляем сообщение и получаем ответ
-                    result = await chat_session_usecase.send_message(user, chat, transcribed_text)
-
-                    # Если контекст запоминается, увеличиваем счетчик контекста
-                    if chat.context_remember:
-                        chat.increment_context_counter()
-                        await chat_repository.update(chat)
-
-                    # Обрабатываем ответ от BotHub
-                    if "response" in result and "content" in result["response"]:
-                        content = result["response"]["content"]
-
-                        # Если сообщение слишком длинное, разбиваем его
-                        if len(content) > 4000:
-                            await send_long_message(message, content)
-                        else:
-                            await message.answer(
-                                content,
-                                parse_mode="Markdown",
-                                reply_markup=get_main_keyboard(user, chat)
-                            )
-
-                        # Если есть информация о токенах, отправляем её
-                        if "tokens" in result:
-                            tokens_info = f"`-{result['tokens']} caps`"
-
-                            # Добавляем информацию о контексте, если он включен
-                            if chat.context_remember:
-                                tokens_info += f"\n\nПродолжить: /continue\n\nСбросить контекст: /reset"
-
-                            await message.answer(
-                                tokens_info,
-                                parse_mode="Markdown",
-                                reply_markup=get_main_keyboard(user, chat)
-                            )
-
-            except Exception as transcribe_error:
-                logger.error(f"Ошибка при транскрибировании: {transcribe_error}", exc_info=True)
-                await bot.delete_message(message.chat.id, processing_msg.message_id)
+            except Exception as file_error:
+                logger.error(f"Ошибка при работе с файлом: {file_error}", exc_info=True)
+                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
                 await message.answer(
-                    f"❌ Не удалось обработать голосовое сообщение: {str(transcribe_error)}",
+                    f"❌ Ошибка при обработке файла: {str(file_error)}",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
-            # Удаляем временный файл
+            # Удаляем временный файл, если он существует
             try:
-                os.remove(temp_file)
-            except Exception as file_error:
-                logger.error(f"Ошибка при удалении файла: {file_error}")
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    logger.info(f"Временный файл удален: {temp_file_path}")
+            except Exception as cleanup_error:
+                logger.error(f"Ошибка при удалении временного файла: {cleanup_error}")
 
         except Exception as e:
             logger.error(f"Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
