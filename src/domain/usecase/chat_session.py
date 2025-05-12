@@ -103,8 +103,5 @@ class ChatSessionUseCase:
         try:
             return await self.gateway.transcribe_voice(user, chat, file_path)
         except Exception as e:
-            logger.error(f"Ошибка при транскрибировании: {str(e)}")
-            if "502 Bad Gateway" in str(e):
-                raise Exception("Сервер BotHub временно недоступен. Пожалуйста, попробуйте позже.")
-            else:
-                raise Exception(f"Не удалось преобразовать голосовое сообщение в текст: {str(e)}")
+            logger.error(f"Ошибка при транскрибировании: {e}", exc_info=True)
+            raise Exception(f"Не удалось преобразовать голосовое сообщение в текст: {str(e)}")

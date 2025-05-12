@@ -1,5 +1,5 @@
 import logging
-import json
+from aiogram import Bot
 from aiogram.types import Message
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
@@ -77,60 +77,45 @@ async def send_long_message(message: Message, content: str, parse_mode: str = "M
         await message.answer(part, parse_mode=parse_mode)
 
 
-async def download_file_custom(token, file_path, api_url):
-    """
-    Скачивание файла из Telegram API
+async def download_telegram_file(bot: Bot, token: str, file_id: str, save_path: str = None):
+    api_server = bot.session.api
+    get_file_url = api_server.api_url(token, "getFile")  # ✅ правильно!
 
-    Args:
-        token: Токен бота
-        file_path: Путь к файлу от API
-        api_url: URL API сервера
-
-    Returns:
-        bytes: Содержимое файла
-    """
-    import aiohttp
-
-    # Формируем правильный URL файла
-    # Заменяем двойные слеши на одинарные
-    file_url = f"{api_url}/file/bot{token}/{file_path}"
-    file_url = file_url.replace("//", "/")
-    file_url = file_url.replace(":/", "://")  # Восстанавливаем протокол
+    logger.info(f"Token: {token}")
+    logger.info(f"API server base: {api_server.base}")
+    logger.info(f"getFile URL: {get_file_url}")
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(file_url) as response:
+        async with session.post(get_file_url, json={"file_id": file_id}) as response:
             if response.status != 200:
-                raise Exception(f"Ошибка при скачивании файла: {response.status}")
+                error_text = await response.text()
+                logger.error(f"HTTP {response.status}: {error_text}")
+                raise Exception(f"Не удалось получить информацию о файле: HTTP {response.status}")
 
-            return await response.read()
+            file_info = await response.json()
+            if not file_info.get("ok"):
+                error = file_info.get("description", "Неизвестная ошибка")
+                raise Exception(f"Ошибка API Telegram: {error}")
 
+            file_path = file_info["result"]["file_path"]
+            logger.info(f"Raw file_path from Telegram: {file_path}")
+            download_url = api_server.file_url(token, file_path)
+            logger.info(f"Download file URL: {download_url}")
 
-# Исправленная функция для скачивания файла
-async def download_voice_file(bot, file_id, temp_file_path):
-    try:
-        # Получаем информацию о файле
-        file_info = await bot.get_file(file_id)
+            async with session.get(download_url) as download_response:
+                if download_response.status != 200:
+                    error_text = await download_response.text()
+                    logger.error(f"HTTP {download_response.status}: {error_text}")
+                    raise Exception(f"Не удалось скачать файл: HTTP {download_response.status}")
 
-        # Получаем настройки
-        from src.config.settings import get_settings
-        settings = get_settings()
+                file_content = await download_response.read()
 
-        # Формируем корректный URL для скачивания
-        api_url = settings.TELEGRAM_API_URL.rstrip('/')
-        file_path = file_info.file_path.lstrip('/')
-        file_url = f"{api_url}/file/bot{bot.token}/{file_path}"
+                if save_path:
+                    import os
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    with open(save_path, "wb") as f:
+                        f.write(file_content)
+                    logger.info(f"Файл сохранен: {save_path}")
+                    return save_path
 
-        # Скачиваем файл
-        async with aiohttp.ClientSession() as session:
-            async with session.get(file_url) as response:
-                if response.status != 200:
-                    raise Exception(f"Не удалось скачать файл: HTTP {response.status}")
-
-                # Сохраняем содержимое файла
-                with open(temp_file_path, "wb") as f:
-                    f.write(await response.read())
-
-        return temp_file_path
-    except Exception as e:
-        logger.error(f"Ошибка при скачивании файла: {e}", exc_info=True)
-        raise
+                return file_content

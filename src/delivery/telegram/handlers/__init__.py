@@ -12,7 +12,8 @@ def setup_handlers(
         account_connection_usecase,
         intent_detection_service,
         user_repository,
-        chat_repository
+        chat_repository,
+        settings
 ) -> Router:
     """Настройка всех обработчиков и их объединение в один роутер"""
 
@@ -64,7 +65,8 @@ def setup_handlers(
         chat_session_usecase,
         intent_detection_service,
         user_repository,
-        chat_repository
+        chat_repository,
+        settings
     )
 
     return main_router

@@ -12,7 +12,9 @@ services:
     ports:
       - "8081:8081"
     command: >
-      /app/telegram-bot-api/bin/telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --http-ip-address=0.0.0.0 --dir=/telegram-bot-api-data --log=/app/telegram-bot-api.log --verbosity=5
+      /app/telegram-bot-api/bin/telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --http-ip-address=0.0.0.0 --dir=/telegram-bot-api-data --verbosity=5 --local
+    networks:
+      - bot-network
 
   telegram-bot:
     build:
@@ -26,7 +28,13 @@ services:
     environment:
       - TELEGRAM_API_URL=http://telegram-bot-api:8081
     ports:
-      - "8000:8000"  # Открываем порт для FastAPI
+      - "8000:8000"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
 
 volumes:
   telegram-data:

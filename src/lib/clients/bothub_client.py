@@ -321,24 +321,42 @@ class BothubClient:
         return await self._make_request("v2/referral", "POST", headers, {"templateId": template_id})
 
     async def whisper(self, access_token: str, file_path: str, method: str = "transcriptions") -> str:
-        """Преобразование аудио в текст (транскрибирование)"""
-        # Реализация загрузки файла для запроса
-        async with aiohttp.ClientSession() as session:
+        """
+        Транскрибирование голосового сообщения через BotHub API
+
+        Args:
+            access_token: Токен доступа
+            file_path: Путь к аудиофайлу
+            method: Метод транскрибирования ('transcriptions' или 'translations')
+
+        Returns:
+            str: Транскрибированный текст
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        try:
+            # Создаем форму для отправки файла
             form = aiohttp.FormData()
             form.add_field('model', 'whisper-1')
             form.add_field('file', open(file_path, 'rb'))
 
-            headers = {"Authorization": f"Bearer {access_token}"}
-            async with session.post(
-                    f"{self.api_url}/api/v2/openai/v1/audio/{method}{self.request_query}",
-                    headers=headers,
-                    data=form
-            ) as response:
-                if response.status >= 400:
-                    raise Exception(f"Ошибка при транскрибировании: {await response.text()}")
+            # Отправляем запрос
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                        f"{self.api_url}/api/v2/openai/v1/audio/{method}{self.request_query}",
+                        headers=headers,
+                        data=form
+                ) as response:
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        raise Exception(f"Ошибка при транскрибировании: HTTP {response.status}, {error_text}")
 
-                result = await response.json()
-                if "text" not in result:
-                    raise Exception("Ошибка при получении текста из аудио")
+                    result = await response.json()
 
-                return result["text"]
+                    if "text" not in result:
+                        raise Exception("Ошибка при получении текста из аудио")
+
+                    return result["text"]
+        except Exception as e:
+            logger.error(f"Ошибка при транскрибировании аудио: {e}", exc_info=True)
+            raise Exception(f"Не удалось транскрибировать аудио: {str(e)}")

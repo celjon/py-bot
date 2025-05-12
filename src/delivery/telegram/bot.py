@@ -64,7 +64,8 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
             account_connection_usecase=account_connection_usecase,
             intent_detection_service=intent_detection_service,
             user_repository=user_repository,
-            chat_repository=chat_repository
+            chat_repository=chat_repository,
+            settings=settings
         )
         logger.info(f"Created handler router: {handlers_router}")
         dp.include_router(handlers_router)
