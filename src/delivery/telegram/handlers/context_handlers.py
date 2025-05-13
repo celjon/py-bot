@@ -97,3 +97,27 @@ def register_context_handlers(router: Router, chat_session_usecase, user_reposit
         except Exception as e:
             logger.error(f"Ошибка при выключении контекста: {e}", exc_info=True)
             await callback.answer("Произошла ошибка при выключении контекста")
+
+    @router.callback_query(lambda c: c.data and json.loads(c.data).get("t") == "c")
+    async def handle_cancel(callback: CallbackQuery):
+        """Обработка отмены действия"""
+        try:
+            user = await get_or_create_user(callback.message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            # Закрываем инлайн клавиатуру
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.answer("Операция отменена")
+
+            # Отправляем сообщение
+            await callback.message.answer(
+                "Операция отменена",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
+            )
+
+            logger.info(f"Пользователь {user.id} отменил операцию")
+
+        except Exception as e:
+            logger.error(f"Ошибка при отмене: {e}", exc_info=True)
+            await callback.answer("Произошла ошибка при отмене")

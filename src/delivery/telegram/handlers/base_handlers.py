@@ -1,4 +1,5 @@
 import logging
+import os
 from aiogram import Bot
 from aiogram.types import Message
 from src.domain.entity.user import User
@@ -77,45 +78,77 @@ async def send_long_message(message: Message, content: str, parse_mode: str = "M
         await message.answer(part, parse_mode=parse_mode)
 
 
-async def download_telegram_file(bot: Bot, token: str, file_id: str, save_path: str = None):
-    api_server = bot.session.api
-    get_file_url = api_server.api_url(token, "getFile")  # ✅ правильно!
-
-    logger.info(f"Token: {token}")
-    logger.info(f"API server base: {api_server.base}")
-    logger.info(f"getFile URL: {get_file_url}")
+async def download_telegram_file(token: str, file_id: str, save_path: str = None):
+    base_url = "http://telegram-bot-api:8081"
+    logger.info(f"[download_telegram_file] Используемый base_url: {base_url}")
+    logger.info(f"[download_telegram_file] Telegram token: {token}")
+    logger.info(f"[download_telegram_file] file_id: {file_id}")
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(get_file_url, json={"file_id": file_id}) as response:
+        # Шаг 1: Получить путь к файлу
+        get_file_url = f"{base_url}/bot{token}/getFile"
+        logger.info(f"[download_telegram_file] URL для getFile: {get_file_url}")
+        async with session.get(get_file_url, params={"file_id": file_id}) as response:
+            logger.info(f"[download_telegram_file] Ответ от getFile: HTTP {response.status}")
+            response_text = await response.text()
             if response.status != 200:
-                error_text = await response.text()
-                logger.error(f"HTTP {response.status}: {error_text}")
-                raise Exception(f"Не удалось получить информацию о файле: HTTP {response.status}")
+                logger.error(
+                    f"[download_telegram_file] Ошибка при запросе getFile: HTTP {response.status}, {response_text}")
+                raise Exception(f"Ошибка при запросе getFile: HTTP {response.status}, {response_text}")
 
-            file_info = await response.json()
-            if not file_info.get("ok"):
-                error = file_info.get("description", "Неизвестная ошибка")
-                raise Exception(f"Ошибка API Telegram: {error}")
+            data = await response.json()
+            if not data.get("ok"):
+                logger.error(f"[download_telegram_file] Telegram API error: {data.get('description')}")
+                raise Exception(f"Telegram API error: {data.get('description')}")
 
-            file_path = file_info["result"]["file_path"]
-            logger.info(f"Raw file_path from Telegram: {file_path}")
-            download_url = api_server.file_url(token, file_path)
-            logger.info(f"Download file URL: {download_url}")
+            file_path = data["result"]["file_path"]
+            logger.info(f"[download_telegram_file] Получен file_path: {file_path}")
 
-            async with session.get(download_url) as download_response:
-                if download_response.status != 200:
-                    error_text = await download_response.text()
-                    logger.error(f"HTTP {download_response.status}: {error_text}")
-                    raise Exception(f"Не удалось скачать файл: HTTP {download_response.status}")
+        # Шаг 2: Извлекаем правильную часть пути для скачивания
+        # Предполагаем, что путь имеет формат /telegram-bot-api-data/TOKEN/voice/file_name.oga
+        parts = file_path.split('/')
 
-                file_content = await download_response.read()
+        # Определяем тип файла и имя файла
+        if len(parts) >= 4:
+            file_type = parts[-2]  # например, 'voice'
+            file_name = parts[-1]  # например, 'file_15.oga'
 
-                if save_path:
-                    import os
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    with open(save_path, "wb") as f:
-                        f.write(file_content)
-                    logger.info(f"Файл сохранен: {save_path}")
-                    return save_path
+            # Формируем URL с учетом того, как работает ваш локальный API
+            download_url = f"{base_url}/file/bot{token}/{file_type}/{file_name}"
+            logger.info(f"[download_telegram_file] URL для скачивания файла: {download_url}")
 
-                return file_content
+            async with session.get(download_url) as file_response:
+                logger.info(f"[download_telegram_file] Ответ от скачивания файла: HTTP {file_response.status}")
+
+                if file_response.status != 200:
+                    # Если не сработало, пробуем без типа файла
+                    simple_url = f"{base_url}/file/bot{token}/{file_name}"
+                    logger.info(f"[download_telegram_file] Пробуем упрощенный URL: {simple_url}")
+
+                    async with session.get(simple_url) as simple_response:
+                        logger.info(f"[download_telegram_file] Ответ от упрощенного URL: HTTP {simple_response.status}")
+
+                        if simple_response.status != 200:
+                            error_text = await simple_response.text()
+                            logger.error(
+                                f"[download_telegram_file] Ошибка при скачивании файла: HTTP {simple_response.status}, {error_text}")
+                            raise Exception(
+                                f"Не удалось скачать файл. Пожалуйста, проверьте документацию вашего Telegram Bot API сервера.")
+
+                        file_data = await simple_response.read()
+                else:
+                    file_data = await file_response.read()
+        else:
+            # Если путь не соответствует ожидаемому формату
+            raise Exception(f"Неожиданный формат пути к файлу: {file_path}")
+
+        # Сохраняем или возвращаем файл
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, "wb") as f:
+                f.write(file_data)
+            logger.info(f"[download_telegram_file] Файл сохранён по пути: {save_path}")
+            return save_path
+
+        logger.info(f"[download_telegram_file] Файл загружен в память, размер: {len(file_data)} байт")
+        return file_data

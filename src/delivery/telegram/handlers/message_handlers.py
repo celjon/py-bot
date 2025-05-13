@@ -56,12 +56,36 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 return
 
             # Проверяем, не является ли сообщение командой клавиатуры
-            if message.text == "🔄 Новый чат":
-                await message.answer(
-                    "Функция создания нового чата будет реализована позже.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
+            elif message.text == "🔄 Новый чат":
+                try:
+                    # Создаем новый чат
+                    await message.answer(
+                        "🔄 Создаю новый чат...",
+                        parse_mode="Markdown"
+                    )
+
+                    # Сбрасываем контекст текущего чата
+                    chat.reset_context_counter()
+                    await chat_repository.update(chat)
+
+                    # Создаем новый чат через usecase
+                    await chat_session_usecase.create_new_chat(user, chat)
+
+                    model_name = chat.bothub_chat_model or "default"
+                    await message.answer(
+                        f"✅ Новый чат создан с моделью *{model_name}*.\n\nТеперь вы можете продолжить общение.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+
+                    logger.info(f"Пользователь {user.id} создал новый чат")
+                except Exception as e:
+                    logger.error(f"Ошибка при создании нового чата: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Не удалось создать новый чат. Пожалуйста, попробуйте позже.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
                 return
 
             elif message.text == "🎨 Генерация изображений":
@@ -250,7 +274,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 temp_file_path = os.path.join(temp_dir, f"voice_{int(time.time())}.ogg")
 
                 # Скачиваем файл с помощью нашей вспомогательной функции
-                await download_telegram_file(message.bot, settings.TELEGRAM_TOKEN, file_id, temp_file_path)
+                await download_telegram_file(settings.TELEGRAM_TOKEN, file_id, temp_file_path)
 
                 # Пока используем заглушку для проверки функциональности
                 transcribed_text = "Это тестовое транскрибирование голосового сообщения."
