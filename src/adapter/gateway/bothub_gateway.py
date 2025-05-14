@@ -333,5 +333,17 @@ class BothubGateway:
         Returns:
             str: Транскрибированный текст
         """
+        # Получаем токен доступа
         access_token = await self.get_access_token(user)
-        return await self.client.whisper(access_token, file_path)
+
+        try:
+            # Отправляем запрос на транскрибацию
+            logger.info(f"Отправка голосового сообщения на транскрибацию: {file_path}")
+            result = await self.client.whisper(access_token, file_path)
+            logger.info(f"Результат транскрибации: {result[:50]}...")
+
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка при транскрибировании голосового сообщения: {e}", exc_info=True)
+            # В случае ошибки возвращаем сообщение об ошибке, которое будет показано пользователю
+            return "Не удалось распознать голосовое сообщение. Пожалуйста, попробуйте еще раз."

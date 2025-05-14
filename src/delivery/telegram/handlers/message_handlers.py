@@ -255,6 +255,10 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
 
+            # Получаем настройки
+            from src.config.settings import get_settings
+            settings = get_settings()
+
             # Сообщаем пользователю, что бот обрабатывает голосовое сообщение
             await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
             processing_msg = await message.answer(
@@ -263,47 +267,100 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             )
 
             try:
-                # Получаем информацию о файле
+                # Получаем информацию о голосовом сообщении
                 file_id = message.voice.file_id
+                duration = message.voice.duration
+                logger.info(f"Получено голосовое сообщение: file_id={file_id}, duration={duration}s")
 
-                # Создаем путь для сохранения
-                import tempfile
-                import os
-                import time
-                temp_dir = tempfile.gettempdir()
-                temp_file_path = os.path.join(temp_dir, f"voice_{int(time.time())}.ogg")
-
-                # Скачиваем файл с помощью нашей вспомогательной функции
-                await download_telegram_file(settings.TELEGRAM_TOKEN, file_id, temp_file_path)
-
-                # Пока используем заглушку для проверки функциональности
-                transcribed_text = "Это тестовое транскрибирование голосового сообщения."
-
-                # В полной реализации:
-                # transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file_path)
-
-                # Удаляем сообщение о загрузке
-                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
-
-                # Отправляем результат транскрибирования
-                await message.answer(
-                    f"🔊 → 📝 Транскрибировано:\n\n{transcribed_text}",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-
-                # Удаляем временный файл
+                # Скачиваем файл с локального API
                 try:
-                    os.remove(temp_file_path)
-                    logger.info(f"Временный файл удален: {temp_file_path}")
-                except Exception as cleanup_error:
-                    logger.error(f"Ошибка при удалении временного файла: {cleanup_error}")
+                    temp_file_path = await download_telegram_file(message.bot, file_id, None, settings)
+                    logger.info(f"Голосовое сообщение сохранено в {temp_file_path}")
 
-            except Exception as file_error:
-                logger.error(f"Ошибка при обработке файла: {file_error}", exc_info=True)
-                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                    # Проверяем размер файла - если файл пустой или очень маленький, это может быть заглушка
+                    file_size = os.path.getsize(temp_file_path)
+                    if file_size < 100:  # слишком маленький для настоящего голосового сообщения
+                        logger.warning(f"Файл слишком маленький ({file_size} байт), может быть заглушкой")
+                        # Уведомляем пользователя
+                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                        await message.answer(
+                            "⚠️ Извините, не удалось получить аудиофайл. Пожалуйста, отправьте ваше сообщение текстом.",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+                        # Удаляем временный файл
+                        try:
+                            os.remove(temp_file_path)
+                        except:
+                            pass
+                        return
+
+                    # Отправляем на транскрибацию
+                    transcribed_text = "Демо-режим транскрибации. Эта функция будет доступна позже."
+
+                    # В реальной имплементации:
+                    # transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file_path)
+
+                    # Удаляем временный файл
+                    try:
+                        os.remove(temp_file_path)
+                        logger.info(f"Временный файл удален: {temp_file_path}")
+                    except Exception as cleanup_error:
+                        logger.error(f"Ошибка при удалении временного файла: {cleanup_error}")
+
+                    # Удаляем сообщение о загрузке
+                    try:
+                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                    except Exception as delete_error:
+                        logger.error(f"Ошибка при удалении сообщения: {delete_error}")
+
+                    # Отправляем результат транскрибации
+                    await message.answer(
+                        f"🔊 → 📝 Распознанный текст:\n\n{transcribed_text}",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+
+                    # Отправляем распознанный текст в чат с ИИ
+                    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+                    result = await chat_session_usecase.send_message(user, chat, transcribed_text)
+
+                    if "response" in result and "content" in result["response"]:
+                        content = result["response"]["content"]
+                        await send_long_message(message, content)
+
+                        # Если есть токены, отправляем информацию о них
+                        if "tokens" in result:
+                            await message.answer(
+                                f"👾 -{result['tokens']} caps",
+                                parse_mode="Markdown"
+                            )
+
+                except Exception as file_error:
+                    logger.error(f"Ошибка при обработке файла: {file_error}", exc_info=True)
+                    # Удаляем сообщение о загрузке
+                    try:
+                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                    except Exception:
+                        pass
+
+                    await message.answer(
+                        "❌ Не удалось обработать голосовое сообщение. Пожалуйста, попробуйте отправить текстовое сообщение.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+
+            except Exception as e:
+                logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+                # Удаляем сообщение о загрузке
+                try:
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                except Exception:
+                    pass
+
                 await message.answer(
-                    "❌ Не удалось скачать голосовое сообщение.",
+                    "❌ Произошла ошибка при обработке голосового сообщения. Пожалуйста, попробуйте отправить текстовое сообщение.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
@@ -311,6 +368,6 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
         except Exception as e:
             logger.error(f"Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
             await message.answer(
-                "❌ Произошла ошибка при обработке голосового сообщения.",
+                "❌ Произошла ошибка при обработке голосового сообщения. Пожалуйста, попробуйте позже.",
                 parse_mode="Markdown"
             )

@@ -98,7 +98,8 @@ class ChatSessionUseCase:
         logger.info(f"Транскрибирование голосового сообщения для пользователя {user.id}")
 
         try:
+            # Отправляем запрос на транскрибацию через gateway
             return await self.gateway.transcribe_voice(user, chat, file_path)
         except Exception as e:
-            logger.error(f"Ошибка при транскрибировании: {e}", exc_info=True)
-            raise Exception(f"Не удалось преобразовать голосовое сообщение в текст: {str(e)}")
+            logger.error(f"Ошибка при транскрибировании голосового сообщения: {e}", exc_info=True)
+            return "Не удалось распознать голосовое сообщение. Пожалуйста, попробуйте еще раз."

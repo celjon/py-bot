@@ -338,25 +338,31 @@ class BothubClient:
             # Создаем форму для отправки файла
             form = aiohttp.FormData()
             form.add_field('model', 'whisper-1')
-            form.add_field('file', open(file_path, 'rb'))
+
+            # Открываем файл в бинарном режиме и добавляем в форму
+            with open(file_path, 'rb') as file:
+                form.add_field('file', file, filename=os.path.basename(file_path), content_type='audio/ogg')
 
             # Отправляем запрос
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                        f"{self.api_url}/api/v2/openai/v1/audio/{method}{self.request_query}",
-                        headers=headers,
-                        data=form
-                ) as response:
+                url = f"{self.api_url}/api/v2/openai/v1/audio/{method}{self.request_query}"
+                logger.info(f"Отправка запроса на транскрибацию: {url}")
+
+                async with session.post(url, headers=headers, data=form) as response:
                     if response.status >= 400:
                         error_text = await response.text()
+                        logger.error(f"Ошибка при транскрибировании: HTTP {response.status}, {error_text}")
                         raise Exception(f"Ошибка при транскрибировании: HTTP {response.status}, {error_text}")
 
                     result = await response.json()
 
                     if "text" not in result:
+                        logger.error(f"В ответе отсутствует текст: {result}")
                         raise Exception("Ошибка при получении текста из аудио")
 
+                    logger.info(f"Транскрибация успешна, получен текст: {result['text'][:50]}...")
                     return result["text"]
+
         except Exception as e:
             logger.error(f"Ошибка при транскрибировании аудио: {e}", exc_info=True)
             raise Exception(f"Не удалось транскрибировать аудио: {str(e)}")
