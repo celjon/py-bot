@@ -93,10 +93,11 @@ async def download_telegram_file(bot, file_id: str, save_path: str = None, setti
     """
     try:
         # Получаем информацию о файле
-        logger.info(f"Получение информации о файле с ID: {file_id}")
+        logger.info(f"[FILE_DOWNLOAD] Получение информации о файле с ID: {file_id}")
         file_info = await bot.get_file(file_id)
         file_path = file_info.file_path
-        logger.info(f"Получен путь к файлу: {file_path}")
+        logger.info(f"[FILE_DOWNLOAD] Получен путь к файлу: {file_path}")
+        logger.info(f"[FILE_DOWNLOAD] Полная информация о файле: {file_info}")
 
         # Если путь не указан, создаем временный файл
         if not save_path:
@@ -104,97 +105,155 @@ async def download_telegram_file(bot, file_id: str, save_path: str = None, setti
             import os
             import time
             temp_dir = tempfile.gettempdir()
-            save_path = os.path.join(temp_dir, f"{file_id}_{int(time.time())}.ogg")
+            file_ext = os.path.splitext(file_path)[
+                           1] or '.ogg'  # Используем расширение из оригинального пути или .ogg по умолчанию
+            save_path = os.path.join(temp_dir, f"{file_id}_{int(time.time())}{file_ext}")
+            logger.info(f"[FILE_DOWNLOAD] Создан временный путь для сохранения: {save_path}")
 
         # Создаем директорию для файла, если она не существует
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        logger.info(f"[FILE_DOWNLOAD] Директория для сохранения файла: {os.path.dirname(save_path)}")
 
-        # Проверяем, есть ли прямой доступ к файлу через файловую систему
-        if os.path.exists(file_path):
-            # Просто копируем файл
-            import shutil
-            shutil.copy(file_path, save_path)
-            logger.info(f"Файл скопирован напрямую из файловой системы: {file_path} -> {save_path}")
-            return save_path
+        # Список всех путей, которые будем проверять
+        paths_to_check = [
+            # Прямой путь
+            file_path,
+            # Путь внутри контейнера Telegram Bot API
+            f"/telegram-bot-api-data{file_path}" if not file_path.startswith("/telegram-bot-api-data") else file_path,
+            # Путь с удаленным начальным слэшем
+            os.path.join("/telegram-bot-api-data", file_path.lstrip("/")),
+            # Дополнительные варианты, которые могут помочь найти файл
+            os.path.join("/telegram-bot-api-data/voice", os.path.basename(file_path)),
+            os.path.join("/telegram-bot-api-data/audio", os.path.basename(file_path))
+        ]
 
-        logger.info(f"Файл не найден по прямому пути: {file_path}")
+        logger.info(f"[FILE_DOWNLOAD] Проверяем следующие пути: {paths_to_check}")
 
-        # Пробуем другие варианты путей в файловой системе
-        # Иногда пути могут немного отличаться
+        # Проверяем все возможные пути
+        for path in paths_to_check:
+            logger.info(f"[FILE_DOWNLOAD] Проверяем путь: {path}")
+            if os.path.exists(path):
+                logger.info(f"[FILE_DOWNLOAD] Файл найден по пути: {path}")
+                # Проверяем размер файла
+                file_size = os.path.getsize(path)
+                logger.info(f"[FILE_DOWNLOAD] Размер файла: {file_size} байт")
 
-        # Вариант 1: файл должен быть в директории /telegram-bot-api-data/
-        alt_path = f"/telegram-bot-api-data{file_path}" if not file_path.startswith(
-            "/telegram-bot-api-data") else file_path
-        if os.path.exists(alt_path):
-            import shutil
-            shutil.copy(alt_path, save_path)
-            logger.info(f"Файл скопирован по альтернативному пути: {alt_path} -> {save_path}")
-            return save_path
+                # Копируем файл
+                import shutil
+                shutil.copy(path, save_path)
+                logger.info(f"[FILE_DOWNLOAD] Файл успешно скопирован из: {path} -> {save_path}")
+                return save_path
+            else:
+                logger.info(f"[FILE_DOWNLOAD] Файл не найден по пути: {path}")
 
-        logger.info(f"Файл не найден по альтернативному пути: {alt_path}")
+        # Логируем текущую директорию и содержимое /telegram-bot-api-data для отладки
+        try:
+            logger.info(f"[FILE_DOWNLOAD] Текущая директория: {os.getcwd()}")
+            if os.path.exists("/telegram-bot-api-data"):
+                logger.info(f"[FILE_DOWNLOAD] Содержимое /telegram-bot-api-data:")
+                for root, dirs, files in os.walk("/telegram-bot-api-data", topdown=True, onerror=None):
+                    logger.info(f"[FILE_DOWNLOAD] Директория: {root}")
+                    logger.info(f"[FILE_DOWNLOAD] Поддиректории: {dirs}")
+                    logger.info(f"[FILE_DOWNLOAD] Файлы: {files}")
+                    # Ограничиваем глубину поиска, чтобы не переполнить логи
+                    if root.count('/') > 4:  # Максимальная глубина
+                        dirs[:] = []  # Не углубляемся дальше
+        except Exception as e:
+            logger.error(f"[FILE_DOWNLOAD] Ошибка при попытке вывести содержимое директории: {e}")
 
-        # Если файл не найден по прямым путям, используем поиск в директории
-        # Обычно файлы голосовых сообщений имеют формат file_X.oga в директории voice
-
-        file_name = os.path.basename(file_path)  # Например, file_18.oga
-
-        # Ищем в директории /telegram-bot-api-data
+        # Поиск по всей директории, если файл не найден по конкретным путям
+        file_name = os.path.basename(file_path)
+        logger.info(f"[FILE_DOWNLOAD] Ищем файл по имени: {file_name} в директории /telegram-bot-api-data")
         for root, dirs, files in os.walk("/telegram-bot-api-data"):
             if file_name in files:
                 found_path = os.path.join(root, file_name)
+                logger.info(f"[FILE_DOWNLOAD] Файл найден по пути: {found_path}")
+
+                # Проверяем размер файла
+                file_size = os.path.getsize(found_path)
+                logger.info(f"[FILE_DOWNLOAD] Размер файла: {file_size} байт")
+
                 import shutil
                 shutil.copy(found_path, save_path)
-                logger.info(f"Файл найден и скопирован: {found_path} -> {save_path}")
+                logger.info(f"[FILE_DOWNLOAD] Файл успешно скопирован: {found_path} -> {save_path}")
                 return save_path
+            # Ограничиваем глубину поиска, чтобы не тратить слишком много времени
+            if root.count('/') > 4:  # Максимальная глубина
+                dirs[:] = []  # Не углубляемся дальше
 
-        # Если файл все равно не найден, пробуем HTTP-запрос
-        # Хотя, основываясь на предыдущих ошибках, это, скорее всего, не сработает
-        logger.warning("Файл не найден в файловой системе, пробуем HTTP-запрос (маловероятно, что сработает)")
+        # Если файл не найден в файловой системе, пробуем HTTP-запрос
+        logger.warning(f"[FILE_DOWNLOAD] Файл не найден в файловой системе, пробуем HTTP-запрос")
 
         # Используем настройки для получения базового URL
         if not settings:
             from src.config.settings import get_settings
             settings = get_settings()
+            logger.info(f"[FILE_DOWNLOAD] Получены настройки: {settings.TELEGRAM_API_URL}")
 
         # Базовый URL локального API
-        local_api_url = settings.TELEGRAM_API_URL.rstrip("/")  # убираем слеш в конце, если есть
+        local_api_url = settings.TELEGRAM_API_URL.rstrip("/")
         token = bot.token
+        logger.info(f"[FILE_DOWNLOAD] Используем API URL: {local_api_url}")
 
         # Пробуем разные форматы URL
         urls_to_try = [
-            f"{local_api_url}/file/bot{token}/voice/{file_name}",
-            f"{local_api_url}/file/bot{token}/{file_name}",
-            f"{local_api_url}/{file_path.lstrip('/')}"
+            f"{local_api_url}/file/bot{token}/{file_path}",
+            f"{local_api_url}/file/bot{token}/{file_path.lstrip('/')}",
+            f"{local_api_url}/file/bot{token}/voice/{os.path.basename(file_path)}",
+            f"{local_api_url}/file/bot{token}/audio/{os.path.basename(file_path)}",
+            # Попробуем прямой URL
+            f"https://api.telegram.org/file/bot{token}/{file_path}"
         ]
 
+        logger.info(f"[FILE_DOWNLOAD] Пробуем следующие URL: {urls_to_try}")
+
         for url in urls_to_try:
-            logger.info(f"Пробуем URL: {url}")
+            logger.info(f"[FILE_DOWNLOAD] Пробуем URL: {url}")
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url) as response:
-                        if response.status == 200:
-                            with open(save_path, "wb") as f:
-                                f.write(await response.read())
-                            logger.info(f"Файл успешно скачан с URL {url}")
-                            return save_path
+                        status = response.status
+                        logger.info(f"[FILE_DOWNLOAD] Статус ответа от {url}: {status}")
+
+                        if status == 200:
+                            content = await response.read()
+                            content_length = len(content)
+                            logger.info(f"[FILE_DOWNLOAD] Получено {content_length} байт с URL {url}")
+
+                            if content_length > 100:  # Проверка, что файл не пустой
+                                with open(save_path, "wb") as f:
+                                    f.write(content)
+                                logger.info(f"[FILE_DOWNLOAD] Файл успешно скачан с URL {url} и сохранен в {save_path}")
+                                return save_path
+                            else:
+                                logger.warning(
+                                    f"[FILE_DOWNLOAD] Получено слишком мало данных ({content_length} байт) с URL {url}")
+                        else:
+                            headers = response.headers
+                            body = await response.text()
+                            logger.error(f"[FILE_DOWNLOAD] Ошибка при загрузке с URL {url}: HTTP {status}")
+                            logger.error(f"[FILE_DOWNLOAD] Заголовки: {headers}")
+                            logger.error(f"[FILE_DOWNLOAD] Тело ответа: {body[:200]}...")  # Логируем только начало тела
             except Exception as url_error:
-                logger.error(f"Ошибка при скачивании с URL {url}: {url_error}")
+                logger.error(f"[FILE_DOWNLOAD] Ошибка при запросе URL {url}: {url_error}")
 
         # Если все попытки не удались - создаем пустой файл для тестирования дальнейшего процесса
-        logger.error("Все попытки скачать файл не удались. Создаем пустой файл для тестирования.")
+        logger.error("[FILE_DOWNLOAD] Все попытки скачать файл не удались. Создаем пустой файл для тестирования.")
         with open(save_path, "wb") as f:
             f.write(b"Test file - failed to download real content")
 
+        logger.warning(f"[FILE_DOWNLOAD] Создан пустой файл для тестирования: {save_path}")
         return save_path
 
     except Exception as e:
-        logger.error(f"Ошибка при скачивании файла: {e}", exc_info=True)
+        logger.error(f"[FILE_DOWNLOAD] Общая ошибка при скачивании файла: {e}", exc_info=True)
 
         # Создаем пустой файл для тестирования дальнейшего процесса
         try:
             with open(save_path, "wb") as f:
                 f.write(b"Test file - exception occurred during download")
-            logger.warning(f"Создан пустой файл для тестирования: {save_path}")
+            logger.warning(f"[FILE_DOWNLOAD] Создан пустой файл для тестирования: {save_path}")
             return save_path
-        except:
+        except Exception as file_error:
+            logger.error(f"[FILE_DOWNLOAD] Ошибка при создании файла заглушки: {file_error}")
             raise Exception(f"Не удалось скачать файл: {e}")

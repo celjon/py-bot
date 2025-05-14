@@ -24,9 +24,12 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
     async def handle_text_message(message: Message):
         """Обработка текстовых сообщений"""
         try:
+            logger.info(f"Получено сообщение: {message.text} от пользователя {message.from_user.id}")
             # Получаем или создаём пользователя и его текущий чат
             user = await get_or_create_user(message, user_repository)
+            logger.info(f"Получен пользователь: {user.id}, {user.first_name}")
             chat = await get_or_create_chat(user, chat_repository)
+            logger.info(f"Получен чат: {chat.id}, bothub_chat_id: {chat.bothub_chat_id}")
 
             # Получаем бота из сообщения
             bot = message.bot
@@ -251,9 +254,12 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
     async def handle_voice_message(message: Message):
         """Обработка голосовых сообщений"""
         try:
+            logger.info("[VOICE] Начало обработки голосового сообщения")
+
             # Получаем или создаём пользователя и его текущий чат
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
+            logger.info(f"[VOICE] Пользователь: {user.id}, чат: {chat.id}")
 
             # Получаем настройки
             from src.config.settings import get_settings
@@ -270,89 +276,81 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 # Получаем информацию о голосовом сообщении
                 file_id = message.voice.file_id
                 duration = message.voice.duration
-                logger.info(f"Получено голосовое сообщение: file_id={file_id}, duration={duration}s")
+                file_size = message.voice.file_size if hasattr(message.voice, 'file_size') else 'unknown'
+                mime_type = message.voice.mime_type if hasattr(message.voice, 'mime_type') else 'audio/ogg'
 
-                # Скачиваем файл с локального API
-                try:
-                    temp_file_path = await download_telegram_file(message.bot, file_id, None, settings)
-                    logger.info(f"Голосовое сообщение сохранено в {temp_file_path}")
+                logger.info(
+                    f"[VOICE] Получено голосовое сообщение: file_id={file_id}, duration={duration}s, size={file_size}, mime_type={mime_type}")
 
-                    # Проверяем размер файла - если файл пустой или очень маленький, это может быть заглушка
-                    file_size = os.path.getsize(temp_file_path)
-                    if file_size < 100:  # слишком маленький для настоящего голосового сообщения
-                        logger.warning(f"Файл слишком маленький ({file_size} байт), может быть заглушкой")
-                        # Уведомляем пользователя
-                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
-                        await message.answer(
-                            "⚠️ Извините, не удалось получить аудиофайл. Пожалуйста, отправьте ваше сообщение текстом.",
-                            parse_mode="Markdown",
-                            reply_markup=get_main_keyboard(user, chat)
-                        )
-                        # Удаляем временный файл
-                        try:
-                            os.remove(temp_file_path)
-                        except:
-                            pass
-                        return
+                # Скачиваем файл с голосовым сообщением
+                temp_file_path = await download_telegram_file(message.bot, file_id, None, settings)
+                logger.info(f"[VOICE] Голосовое сообщение сохранено в {temp_file_path}")
 
-                    # Отправляем на транскрибацию
-                    transcribed_text = "Демо-режим транскрибации. Эта функция будет доступна позже."
+                # Проверяем, что файл существует и имеет нормальный размер
+                if not os.path.exists(temp_file_path):
+                    logger.error(f"[VOICE] Файл не существует: {temp_file_path}")
+                    raise Exception("Файл не был сохранен")
 
-                    # В реальной имплементации:
-                    # transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file_path)
+                actual_file_size = os.path.getsize(temp_file_path)
+                logger.info(f"[VOICE] Размер сохраненного файла: {actual_file_size} байт")
 
-                    # Удаляем временный файл
+                if actual_file_size < 100:
+                    logger.warning(f"[VOICE] Файл слишком маленький ({actual_file_size} байт)")
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                    await message.answer(
+                        "⚠️ Извините, аудиофайл слишком маленький. Пожалуйста, отправьте более длинное голосовое сообщение.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
                     try:
                         os.remove(temp_file_path)
-                        logger.info(f"Временный файл удален: {temp_file_path}")
-                    except Exception as cleanup_error:
-                        logger.error(f"Ошибка при удалении временного файла: {cleanup_error}")
-
-                    # Удаляем сообщение о загрузке
-                    try:
-                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
-                    except Exception as delete_error:
-                        logger.error(f"Ошибка при удалении сообщения: {delete_error}")
-
-                    # Отправляем результат транскрибации
-                    await message.answer(
-                        f"🔊 → 📝 Распознанный текст:\n\n{transcribed_text}",
-                        parse_mode="Markdown",
-                        reply_markup=get_main_keyboard(user, chat)
-                    )
-
-                    # Отправляем распознанный текст в чат с ИИ
-                    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-
-                    result = await chat_session_usecase.send_message(user, chat, transcribed_text)
-
-                    if "response" in result and "content" in result["response"]:
-                        content = result["response"]["content"]
-                        await send_long_message(message, content)
-
-                        # Если есть токены, отправляем информацию о них
-                        if "tokens" in result:
-                            await message.answer(
-                                f"👾 -{result['tokens']} caps",
-                                parse_mode="Markdown"
-                            )
-
-                except Exception as file_error:
-                    logger.error(f"Ошибка при обработке файла: {file_error}", exc_info=True)
-                    # Удаляем сообщение о загрузке
-                    try:
-                        await message.bot.delete_message(message.chat.id, processing_msg.message_id)
-                    except Exception:
+                    except:
                         pass
+                    return
 
-                    await message.answer(
-                        "❌ Не удалось обработать голосовое сообщение. Пожалуйста, попробуйте отправить текстовое сообщение.",
-                        parse_mode="Markdown",
-                        reply_markup=get_main_keyboard(user, chat)
-                    )
+                # Отправляем на транскрибацию
+                logger.info(f"[VOICE] Отправляем файл {temp_file_path} на транскрибацию")
+                transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file_path)
+                logger.info(f"[VOICE] Результат транскрибации: {transcribed_text[:100]}...")
 
-            except Exception as e:
-                logger.error(f"Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+                # После транскрибации удаляем временный файл
+                try:
+                    os.remove(temp_file_path)
+                    logger.info(f"[VOICE] Временный файл удален: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.error(f"[VOICE] Ошибка при удалении временного файла: {cleanup_error}")
+
+                # Удаляем сообщение о загрузке
+                try:
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                except Exception as delete_error:
+                    logger.error(f"[VOICE] Ошибка при удалении сообщения: {delete_error}")
+
+                # Отправляем результат транскрибации
+                await message.answer(
+                    f"🔊 → 📝 Распознанный текст:\n\n{transcribed_text}",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+                # Отправляем распознанный текст в чат с ИИ
+                await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+                result = await chat_session_usecase.send_message(user, chat, transcribed_text)
+
+                if "response" in result and "content" in result["response"]:
+                    content = result["response"]["content"]
+                    await send_long_message(message, content)
+
+                    # Если есть токены, отправляем информацию о них
+                    if "tokens" in result:
+                        await message.answer(
+                            f"👾 -{result['tokens']} caps",
+                            parse_mode="Markdown"
+                        )
+
+            except Exception as file_error:
+                logger.error(f"[VOICE] Ошибка при обработке файла: {file_error}", exc_info=True)
                 # Удаляем сообщение о загрузке
                 try:
                     await message.bot.delete_message(message.chat.id, processing_msg.message_id)
@@ -360,13 +358,13 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                     pass
 
                 await message.answer(
-                    "❌ Произошла ошибка при обработке голосового сообщения. Пожалуйста, попробуйте отправить текстовое сообщение.",
+                    "❌ Не удалось обработать голосовое сообщение. Пожалуйста, попробуйте отправить текстовое сообщение.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
         except Exception as e:
-            logger.error(f"Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
+            logger.error(f"[VOICE] Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
             await message.answer(
                 "❌ Произошла ошибка при обработке голосового сообщения. Пожалуйста, попробуйте позже.",
                 parse_mode="Markdown"

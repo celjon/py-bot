@@ -1,7 +1,7 @@
 # src/lib/clients/bothub_client.py
 
 import aiohttp
-import json
+import os
 import logging
 from typing import Dict, Any, Optional, List
 from src.config.settings import Settings
@@ -28,9 +28,25 @@ class BothubClient:
             retry: int = 3
     ) -> Dict[str, Any]:
         """Базовый метод для выполнения запросов к API с поддержкой повторных попыток"""
-        url = f"{self.api_url}/api/{path}{self.request_query}"
+        if not self.api_url:
+            raise Exception("URL API не указан. Проверьте настройку BOTHUB_API_URL в .env")
+
+            # Логируем URL API для отладки
+        logger.info(f"Используем URL API: {self.api_url}")
+        # Если путь не начинается с v2/, добавляем его
+        if not path.startswith("v2/"):
+            full_path = f"v2/{path}"
+        else:
+            full_path = path
+
+        url = f"{self.api_url}/{full_path}{self.request_query}"
+
         default_headers = {"Content-type": "application/json"} if as_json else {}
         headers = {**default_headers, **(headers or {})}
+
+        logger.info(f"Выполнение запроса {method} {url}")
+        if data:
+            logger.info(f"Данные запроса: {data}")
 
         attempt = 0
         last_error = None
@@ -42,8 +58,17 @@ class BothubClient:
                         async with session.get(url, headers=headers, timeout=timeout) as response:
                             if response.status >= 400:
                                 error_text = await response.text()
-                                if response.status == 502:
-                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                logger.error(f"Ошибка {response.status}: {error_text}")
+
+                                # Проверяем альтернативные пути API
+                                if response.status == 404 and attempt == 0:
+                                    # Пробуем альтернативный путь без v2/
+                                    alt_url = f"{self.api_url}/{path.replace('v2/', '')}{self.request_query}"
+                                    logger.info(f"Пробуем альтернативный URL: {alt_url}")
+                                    url = alt_url
+                                    attempt += 1
+                                    continue
+
                                 raise Exception(f"Error {response.status}: {error_text}")
                             return await response.json()
                     elif method == "POST":
@@ -56,8 +81,17 @@ class BothubClient:
                         ) as response:
                             if response.status >= 400:
                                 error_text = await response.text()
-                                if response.status == 502:
-                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                logger.error(f"Ошибка {response.status}: {error_text}")
+
+                                # Проверяем альтернативные пути API
+                                if response.status == 404 and attempt == 0:
+                                    # Пробуем альтернативный путь без v2/
+                                    alt_url = f"{self.api_url}/{path.replace('v2/', '')}{self.request_query}"
+                                    logger.info(f"Пробуем альтернативный URL: {alt_url}")
+                                    url = alt_url
+                                    attempt += 1
+                                    continue
+
                                 raise Exception(f"Error {response.status}: {error_text}")
                             return await response.json()
                     elif method == "PATCH":
@@ -69,8 +103,17 @@ class BothubClient:
                         ) as response:
                             if response.status >= 400:
                                 error_text = await response.text()
-                                if response.status == 502:
-                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                logger.error(f"Ошибка {response.status}: {error_text}")
+
+                                # Проверяем альтернативные пути API
+                                if response.status == 404 and attempt == 0:
+                                    # Пробуем альтернативный путь без v2/
+                                    alt_url = f"{self.api_url}/{path.replace('v2/', '')}{self.request_query}"
+                                    logger.info(f"Пробуем альтернативный URL: {alt_url}")
+                                    url = alt_url
+                                    attempt += 1
+                                    continue
+
                                 raise Exception(f"Error {response.status}: {error_text}")
                             return await response.json()
                     elif method == "PUT":
@@ -82,8 +125,17 @@ class BothubClient:
                         ) as response:
                             if response.status >= 400:
                                 error_text = await response.text()
-                                if response.status == 502:
-                                    raise Exception(f"Сервер BotHub временно недоступен (502 Bad Gateway)")
+                                logger.error(f"Ошибка {response.status}: {error_text}")
+
+                                # Проверяем альтернативные пути API
+                                if response.status == 404 and attempt == 0:
+                                    # Пробуем альтернативный путь без v2/
+                                    alt_url = f"{self.api_url}/{path.replace('v2/', '')}{self.request_query}"
+                                    logger.info(f"Пробуем альтернативный URL: {alt_url}")
+                                    url = alt_url
+                                    attempt += 1
+                                    continue
+
                                 raise Exception(f"Error {response.status}: {error_text}")
                             return await response.json()
                     else:
@@ -139,6 +191,7 @@ class BothubClient:
             self, access_token: str, group_id: str, name: str, model_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Создание нового чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
         data = {"name": name}
         if group_id:
             data["groupId"] = group_id
@@ -147,7 +200,6 @@ class BothubClient:
 
         logger.info(f"Создание чата с данными: {data}")
 
-        headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/chat", "POST", headers, data)
 
     async def list_models(self, access_token: str) -> List[Dict[str, Any]]:
@@ -293,6 +345,40 @@ class BothubClient:
                     "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
                 }
             }
+
+    async def update_parent_model(self, access_token: str, chat_id: str, parent_model_id: str) -> Dict[str, Any]:
+        """
+        Обновление родительской модели чата
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+            parent_model_id: ID родительской модели
+
+        Returns:
+            Dict[str, Any]: Ответ от API
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"parent_model_id": parent_model_id}
+
+        return await self._make_request(f"v2/chat/{chat_id}/parent-model", "PATCH", headers, data)
+
+    async def save_model(self, access_token: str, chat_id: str, model_id: str) -> Dict[str, Any]:
+        """
+        Сохранение модели для чата
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+            model_id: ID модели
+
+        Returns:
+            Dict[str, Any]: Ответ от API
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"model_id": model_id}
+
+        return await self._make_request(f"v2/chat/{chat_id}/model", "PATCH", headers, data)
 
     async def save_system_prompt(self, access_token: str, chat_id: str, system_prompt: str) -> Dict[str, Any]:
         """
