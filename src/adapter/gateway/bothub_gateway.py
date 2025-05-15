@@ -73,83 +73,87 @@ class BothubGateway:
 
     async def create_new_chat(self, user: User, chat: Chat, is_image_generation: bool = False) -> None:
         """
-        Создание нового чата
+        Creating a new chat
 
         Args:
-            user: Пользователь
-            chat: Чат
-            is_image_generation: Флаг создания чата для генерации изображений
+            user: User
+            chat: Chat
+            is_image_generation: Flag for image generation chat
         """
-        logger.info(f"Создание нового чата для пользователя {user.id}")
+        logger.info(f"Creating new chat for user {user.id}")
         access_token = await self.get_access_token(user)
 
-        # Если нет группы, создаем новую
+        # If no group, create a new one
         if not user.bothub_group_id:
-            logger.info(f"Создание новой группы для пользователя {user.id}")
+            logger.info(f"Creating new group for user {user.id}")
             group_response = await self.client.create_new_group(access_token, "Telegram")
             user.bothub_group_id = group_response["id"]
 
         try:
             name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-            # Выбор модели в зависимости от типа чата
-            if is_image_generation:
-                # Для генерации изображений используем модель пользователя или модель по умолчанию
-                model_id = user.image_generation_model or "dall-e"
-                logger.info(f"Создание чата для генерации изображений с моделью {model_id}")
+            # Get available models first
+            try:
+                models = await self.client.list_models(access_token)
 
-                # Специальная обработка для моделей flux, как в PHP-версии
-                if "flux" in model_id:
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        "replicate-flux"  # Родительская модель для flux
-                    )
-                    await self.client.update_parent_model(access_token, response["id"], "replicate-flux")
-                    await self.client.save_model(access_token, response["id"], model_id)
-                    response["model_id"] = model_id
+                if is_image_generation:
+                    # For image generation
+                    model_id = user.image_generation_model or "dall-e"
+                    parent_id = model_id  # For image models, parent and model are typically the same
+
+                    # Special handling for flux models
+                    if "flux" in model_id:
+                        response = await self.client.create_new_chat(
+                            access_token,
+                            user.bothub_group_id,
+                            name,
+                            "replicate-flux"  # Parent model for flux
+                        )
+                        await self.client.update_parent_model(access_token, response["id"], "replicate-flux")
+                        await self.client.save_model(access_token, response["id"], model_id)
+                        response["model_id"] = model_id
+                    else:
+                        response = await self.client.create_new_chat(
+                            access_token,
+                            user.bothub_group_id,
+                            name,
+                            model_id
+                        )
                 else:
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        model_id
-                    )
-            else:
-                # Для текстовых моделей
-                try:
-                    # Сначала пробуем получить список доступных моделей
-                    models = await self.client.list_models(access_token)
+                    # For text models
+                    # Filter for text models that are default or allowed
+                    text_models = [
+                        model for model in models
+                        if ("TEXT_TO_TEXT" in model.get("features", []) and
+                            (model.get("is_default", False) or model.get("is_allowed", False)))
+                    ]
 
-                    # Фильтруем модели - ищем текстовые модели
-                    text_models = [m for m in models if "TEXT_TO_TEXT" in m.get("features", [])]
-
-                    # Сначала пытаемся найти модель по умолчанию
+                    # Find a suitable model
                     default_model = None
                     for model in text_models:
                         if model.get("is_default") and model.get("is_allowed", False):
                             default_model = model
                             break
 
-                    # Если модель по умолчанию не найдена, берем первую доступную
+                    # If no default model, take the first allowed one
                     if default_model is None:
                         for model in text_models:
                             if model.get("is_allowed", False):
                                 default_model = model
                                 break
 
-                    # Если ни одна модель не найдена или не доступна, используем gpt-3.5-turbo
+                    # If still no model found, use a fallback
                     if default_model is None:
-                        model_id = "gpt-3.5-turbo"
-                        parent_id = "gpt"  # Для gpt-3.5-turbo родительская модель обычно "gpt"
+                        # Fallback to a basic model - using parent model ID
+                        parent_id = "gpt"
+                        model_id = "gpt-4.1-nano"
                     else:
                         model_id = default_model.get("id")
                         parent_id = default_model.get("parent_id") or model_id
 
-                    logger.info(f"Создание текстового чата с моделью {model_id} (parent: {parent_id})")
+                    logger.info(f"Creating chat with model: {model_id} (parent: {parent_id})")
 
-                    # Создаем чат с родительской моделью
+                    # Create chat with parent model
                     response = await self.client.create_new_chat(
                         access_token,
                         user.bothub_group_id,
@@ -157,7 +161,7 @@ class BothubGateway:
                         parent_id
                     )
 
-                    # Если родительская модель отличается от выбранной, настраиваем модель чата
+                    # Then set the actual model
                     if parent_id != model_id:
                         await self.client.save_chat_settings(
                             access_token,
@@ -167,37 +171,35 @@ class BothubGateway:
                             chat.context_remember,
                             chat.system_prompt
                         )
-                except Exception as model_error:
-                    # Если произошла ошибка при получении моделей, используем модель по умолчанию
-                    logger.error(f"Ошибка при получении списка моделей: {str(model_error)}")
 
-                    # Попробуем создать чат с моделью "gpt" как родительской
-                    model_id = "gpt-3.5-turbo"
-                    parent_id = "gpt"
+            except Exception as model_error:
+                logger.error(f"Error getting models: {str(model_error)}")
+                # Simpler fallback
+                parent_id = "gpt"  # Use parent model ID
+                model_id = "gpt-3.5-turbo"
 
-                    logger.info(f"Создание чата с моделью по умолчанию: {model_id} (parent: {parent_id})")
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        parent_id
-                    )
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    parent_id
+                )
 
-                    # Устанавливаем модель для чата
-                    await self.client.save_chat_settings(
-                        access_token,
-                        response["id"],
-                        model_id,
-                        None,  # max_tokens
-                        chat.context_remember,
-                        chat.system_prompt
-                    )
+                # Then set the model we want
+                await self.client.save_chat_settings(
+                    access_token,
+                    response["id"],
+                    model_id,
+                    None,  # max_tokens
+                    chat.context_remember,
+                    chat.system_prompt
+                )
 
-            # Обновляем данные чата
+            # Update chat data
             chat.bothub_chat_id = response["id"]
             chat.bothub_chat_model = response.get("model_id", model_id)
 
-            # Если есть системный промпт, сохраняем его
+            # Save system prompt if present
             if chat.system_prompt:
                 await self.client.save_system_prompt(
                     access_token,
@@ -206,51 +208,35 @@ class BothubGateway:
                 )
 
         except Exception as e:
-            logger.error(f"Ошибка при создании чата: {str(e)}")
-
-            # Если группа не найдена, создаем новую и пробуем снова
+            # Handle errors
             if "404" in str(e) or "500" in str(e):
-                try:
-                    group_response = await self.client.create_new_group(access_token, "Telegram")
-                    user.bothub_group_id = group_response["id"]
+                # Create new group and try again
+                group_response = await self.client.create_new_group(access_token, "Telegram")
+                user.bothub_group_id = group_response["id"]
 
-                    # Создаем чат заново, но без рекурсивного вызова
-                    name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                # Create chat with simpler approach
+                name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                parent_id = "gpt"
+                model_id = "gpt-3.5-turbo"
 
-                    # Простой вариант с фиксированной моделью
-                    model_id = "gpt-3.5-turbo" if not is_image_generation else "dall-e"
-                    parent_id = "gpt" if not is_image_generation else model_id
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    parent_id
+                )
 
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        parent_id
-                    )
+                chat.bothub_chat_id = response["id"]
+                chat.bothub_chat_model = model_id
 
-                    chat.bothub_chat_id = response["id"]
-                    chat.bothub_chat_model = model_id
-
-                    # Если модель отличается от родительской, настраиваем
-                    if parent_id != model_id:
-                        await self.client.save_chat_settings(
-                            access_token,
-                            response["id"],
-                            model_id,
-                            None,  # max_tokens
-                            chat.context_remember,
-                            chat.system_prompt
-                        )
-
-                    if chat.system_prompt:
-                        await self.client.save_system_prompt(
-                            access_token,
-                            chat.bothub_chat_id,
-                            chat.system_prompt
-                        )
-                except Exception as retry_error:
-                    logger.error(f"Ошибка при повторном создании чата: {str(retry_error)}")
-                    raise
+                await self.client.save_chat_settings(
+                    access_token,
+                    response["id"],
+                    model_id,
+                    None,
+                    chat.context_remember,
+                    chat.system_prompt
+                )
             else:
                 raise
 
