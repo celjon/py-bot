@@ -287,7 +287,34 @@ class BothubClient:
             List[Dict[str, Any]]: Список моделей
         """
         headers = {"Authorization": f"Bearer {access_token}"}
-        return await self._make_request("model/list", "GET", headers)
+        logger.info(f"Запрашиваем список моделей с заголовками: {headers}")
+
+        try:
+            result = await self._make_request("model/list", "GET", headers)
+
+            # Логирование полного ответа API
+            logger.info(f"Получен ответ от model/list: {json.dumps(result, ensure_ascii=False, indent=2)}")
+
+            # Анализ ответа для поиска моделей текста
+            if isinstance(result, list):
+                logger.info(f"Найдено {len(result)} моделей")
+                for idx, model in enumerate(result):
+                    model_id = model.get("id", "Н/Д")
+                    model_label = model.get("label", "Н/Д")
+                    features = model.get("features", [])
+                    parent_id = model.get("parent_id", "Н/Д")
+                    is_allowed = model.get("is_allowed", False)
+                    logger.info(
+                        f"Модель #{idx + 1}: id={model_id}, label={model_label}, features={features}, parent_id={parent_id}, is_allowed={is_allowed}")
+            else:
+                logger.warning(f"Неожиданный формат ответа от model/list: {type(result)}")
+
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка моделей: {str(e)}")
+            # Логируем подробную информацию об ошибке
+            logger.error(f"Детали ошибки: {str(e)}", exc_info=True)
+            raise
 
     async def save_chat_settings(
             self,
