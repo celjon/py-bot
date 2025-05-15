@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 import asyncio
@@ -41,7 +42,8 @@ class BothubClient:
             as_json: bool = True,
             multipart: bool = False,
             timeout: int = 30,
-            retry: int = 3
+            retry: int = 3,
+            add_request_query: bool = True
     ) -> Dict[str, Any]:
         """
         Выполняет HTTP-запрос к API BotHub
@@ -55,6 +57,7 @@ class BothubClient:
             multipart: Отправлять ли данные как multipart/form-data
             timeout: Тайм-аут запроса в секундах
             retry: Количество повторных попыток
+            add_request_query: Добавлять ли стандартные параметры запроса
 
         Returns:
             Dict[str, Any]: Ответ от API
@@ -70,7 +73,9 @@ class BothubClient:
             path = path[3:]
 
         # Формируем URL в стиле PHP-версии
-        url = f"{self.api_url}/api/v2/{path}{self.request_query}"
+        query_params = self.request_query if add_request_query else ""
+        url = f"{self.api_url}/api/v2/{path}{query_params}"
+
 
         # Настраиваем заголовки
         default_headers = {}
@@ -220,8 +225,6 @@ class BothubClient:
             logger.error(f"Заголовки: {headers}")
             raise Exception(f"Ошибка авторизации BotHub: {str(e)}")
 
-    # Далее идут методы для конкретных эндпоинтов API
-    # Пример:
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
         """
         Получение информации о пользователе
@@ -290,31 +293,43 @@ class BothubClient:
         logger.info(f"Запрашиваем список моделей с заголовками: {headers}")
 
         try:
-            result = await self._make_request("model/list", "GET", headers)
+            # Здесь убираем параметры запроса для этого эндпоинта
+            url = f"{self.api_url}/api/v2/model/list"
+            async with aiohttp.ClientSession() as session:
+                logger.info(f"Выполняем прямой запрос к: {url}")
+                async with session.get(url, headers=headers) as response:
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка при получении моделей: HTTP {response.status}, {error_text}")
+                        raise Exception(f"Ошибка при получении моделей: HTTP {response.status}, {error_text}")
 
-            # Логирование полного ответа API
-            logger.info(f"Получен ответ от model/list: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                    result = await response.json()
+                    # Логирование полного ответа API
+                    logger.info(f"Получен ответ от model/list: {json.dumps(result, ensure_ascii=False, indent=2)}")
 
-            # Анализ ответа для поиска моделей текста
-            if isinstance(result, list):
-                logger.info(f"Найдено {len(result)} моделей")
-                for idx, model in enumerate(result):
-                    model_id = model.get("id", "Н/Д")
-                    model_label = model.get("label", "Н/Д")
-                    features = model.get("features", [])
-                    parent_id = model.get("parent_id", "Н/Д")
-                    is_allowed = model.get("is_allowed", False)
-                    logger.info(
-                        f"Модель #{idx + 1}: id={model_id}, label={model_label}, features={features}, parent_id={parent_id}, is_allowed={is_allowed}")
-            else:
-                logger.warning(f"Неожиданный формат ответа от model/list: {type(result)}")
+                    # Анализ ответа для поиска моделей текста
+                    if isinstance(result, list):
+                        logger.info(f"Найдено {len(result)} моделей")
+                        for idx, model in enumerate(result):
+                            model_id = model.get("id", "Н/Д")
+                            model_label = model.get("label", "Н/Д")
+                            features = model.get("features", [])
+                            is_allowed = model.get("is_allowed", False)
+                            is_default = model.get("is_default", False)
+                            logger.info(
+                                f"Модель #{idx + 1}: id={model_id}, label={model_label}, "
+                                f"features={features}, is_allowed={is_allowed}, is_default={is_default}")
+                    else:
+                        logger.warning(f"Неожиданный формат ответа от model/list: {type(result)}")
 
-            return result
+                    return result
         except Exception as e:
             logger.error(f"Ошибка при получении списка моделей: {str(e)}")
             # Логируем подробную информацию об ошибке
             logger.error(f"Детали ошибки: {str(e)}", exc_info=True)
-            raise
+
+            # Возвращаем пустой список, чтобы код мог продолжить работу
+            return []
 
     async def save_chat_settings(
             self,
@@ -427,11 +442,94 @@ class BothubClient:
             "stream": False
         }
 
-        # Если есть файлы, здесь должен быть код для их отправки
-        # Для полноценной отправки файлов нужен более сложный код с multipart/form-data
-        # Это можно будет дополнить, когда будет предоставлен PHP-код
+        # Проверка наличия файлов
+        if files or audio_files:
+            # Для отправки файлов используем FormData
+            import os
+            from aiohttp import FormData
 
-        return await self._make_request("message/send", "POST", headers, data)
+            form_data = FormData()
+            form_data.add_field('chatId', chat_id)
+            form_data.add_field('message', message)
+            form_data.add_field('stream', 'false')
+
+            # Добавляем обычные файлы
+            if files:
+                for i, file_path in enumerate(files):
+                    if os.path.exists(file_path):
+                        filename = os.path.basename(file_path)
+                        mime_type = self._get_mime_type(file_path)
+                        with open(file_path, 'rb') as f:
+                            form_data.add_field(
+                                f'files[{i}]',
+                                f.read(),
+                                filename=filename,
+                                content_type=mime_type
+                            )
+                    else:
+                        logger.warning(f"Файл не найден: {file_path}")
+
+            # Добавляем аудио файлы
+            if audio_files:
+                for i, file_path in enumerate(audio_files):
+                    if os.path.exists(file_path):
+                        filename = os.path.basename(file_path)
+                        mime_type = self._get_mime_type(file_path)
+                        with open(file_path, 'rb') as f:
+                            form_data.add_field(
+                                f'audioFiles[{i}]',
+                                f.read(),
+                                filename=filename,
+                                content_type=mime_type
+                            )
+                    else:
+                        logger.warning(f"Аудио файл не найден: {file_path}")
+
+            # Отправляем multipart-запрос напрямую
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.api_url}/api/v2/message/send{self.request_query}"
+                headers = {"Authorization": f"Bearer {access_token}"}
+
+                async with session.post(url, data=form_data, headers=headers) as response:
+                    status = response.status
+                    body = await response.text()
+
+                    if status >= 300:
+                        logger.error(f"Ошибка при отправке файлов: HTTP {status}, {body}")
+                        raise Exception(f"Ошибка при отправке файлов: HTTP {status}")
+
+                    try:
+                        result = json.loads(body)
+                        return result
+                    except json.JSONDecodeError:
+                        logger.error(f"Не удалось декодировать ответ: {body}")
+                        raise Exception("Неверный формат ответа от сервера")
+        else:
+            # Обычный запрос без файлов
+            return await self._make_request("message/send", "POST", headers, data)
+
+    def _get_mime_type(self, file_path: str) -> str:
+        """Определяет mime-тип файла"""
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type:
+            # Определяем тип по расширению
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ['.mp3', '.m4a']:
+                return 'audio/mpeg'
+            elif ext in ['.ogg', '.oga']:
+                return 'audio/ogg'
+            elif ext in ['.wav']:
+                return 'audio/wav'
+            elif ext in ['.jpg', '.jpeg']:
+                return 'image/jpeg'
+            elif ext in ['.png']:
+                return 'image/png'
+            elif ext in ['.pdf']:
+                return 'application/pdf'
+            else:
+                return 'application/octet-stream'
+        return mime_type
 
     async def get_web_search(self, access_token: str, chat_id: str) -> bool:
         """
@@ -488,8 +586,8 @@ class BothubClient:
             Dict[str, Any]: Результат операции
         """
         headers = {"Authorization": f"Bearer {access_token}"}
-        data = {"parent_model_id": parent_model_id}
-        return await self._make_request(f"chat/{chat_id}/parent-model", "PATCH", headers, data)
+        data = {"modelId": parent_model_id}
+        return await self._make_request(f"chat/{chat_id}", "PATCH", headers, data)
 
     async def save_model(
             self,
@@ -509,8 +607,8 @@ class BothubClient:
             Dict[str, Any]: Результат операции
         """
         headers = {"Authorization": f"Bearer {access_token}"}
-        data = {"model_id": model_id}
-        return await self._make_request(f"chat/{chat_id}/model", "PATCH", headers, data)
+        data = {"model": model_id}
+        return await self._make_request(f"chat/{chat_id}/settings", "PATCH", headers, data)
 
     async def generate_telegram_connection_token(self, access_token: str) -> Dict[str, Any]:
         """
@@ -580,3 +678,18 @@ class BothubClient:
                 logger.info(f"Временный файл удален: {file_path}")
             except Exception as e:
                 logger.warning(f"Не удалось удалить временный файл: {e}")
+
+    async def clickButton(self, access_token: str, chat_id: str, button_id: str) -> Dict[str, Any]:
+        """
+        Нажатие на кнопку (например, кнопку Midjourney)
+
+        Args:
+            access_token: Токен доступа
+            chat_id: ID чата
+            button_id: ID кнопки
+
+        Returns:
+            Dict[str, Any]: Результат нажатия на кнопку
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        return await self._make_request(f"message/button/{button_id}/click", "POST", headers)
