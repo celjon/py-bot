@@ -28,8 +28,11 @@ def register_account_handlers(router: Router, account_connection_usecase, user_r
                 return
 
             try:
-                # Генерируем ссылку для подключения через account_connection_usecase
-                link = await account_connection_usecase.generate_connection_link(user)
+                # Демо-версия: просто показываем сообщение
+                # В полной версии будет:
+                # link = await account_connection_usecase.generate_connection_link(user)
+
+                link = "https://example.com/link_demo"  # Демо-ссылка
 
                 # Правильное экранирование специальных символов
                 escaped_link = link.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("]", "\\]")

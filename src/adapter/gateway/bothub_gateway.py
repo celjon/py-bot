@@ -94,108 +94,80 @@ class BothubGateway:
 
             # Выбор модели в зависимости от типа чата
             if is_image_generation:
-                # Для генерации изображений используем модель пользователя или модель по умолчанию
                 model_id = user.image_generation_model or "dall-e"
+
                 logger.info(f"Создание чата для генерации изображений с моделью {model_id}")
-
-                # Специальная обработка для моделей flux, как в PHP-версии
-                if "flux" in model_id:
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        "replicate-flux"  # Родительская модель для flux
-                    )
-                    await self.client.update_parent_model(access_token, response["id"], "replicate-flux")
-                    await self.client.save_model(access_token, response["id"], model_id)
-                    response["model_id"] = model_id
-                else:
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        model_id
-                    )
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    model_id
+                )
             else:
-                # Для текстовых моделей
-                try:
-                    # Сначала пробуем получить список доступных моделей
-                    models = await self.client.list_models(access_token)
+                # Получаем список доступных моделей
+                models = await self.client.list_models(access_token)
 
-                    # Фильтруем модели - ищем текстовые модели
-                    text_models = [m for m in models if "TEXT_TO_TEXT" in m.get("features", [])]
+                # Находим модель по умолчанию или первую доступную текстовую модель
+                default_model = None
+                first_allowed_model = None
 
-                    # Сначала пытаемся найти модель по умолчанию
-                    default_model = None
-                    for model in text_models:
-                        if model.get("is_default") and model.get("is_allowed", False):
+                for model in models:
+                    # Проверяем, является ли модель текстовой
+                    is_text_model = "TEXT_TO_TEXT" in model.get("features", [])
+                    is_allowed = model.get("is_allowed", False)
+
+                    if is_text_model and is_allowed:
+                        # Приоритет - модель по умолчанию
+                        if model.get("is_default", False):
                             default_model = model
                             break
 
-                    # Если модель по умолчанию не найдена, берем первую доступную
-                    if default_model is None:
-                        for model in text_models:
-                            if model.get("is_allowed", False):
-                                default_model = model
-                                break
+                        # Если еще не нашли разрешенную модель, сохраняем первую
+                        if first_allowed_model is None:
+                            first_allowed_model = model
 
-                    # Если ни одна модель не найдена или не доступна, используем gpt-3.5-turbo
-                    if default_model is None:
-                        model_id = "gpt-3.5-turbo"
-                        parent_id = "gpt"  # Для gpt-3.5-turbo родительская модель обычно "gpt"
-                    else:
-                        model_id = default_model.get("id")
-                        parent_id = default_model.get("parent_id") or model_id
+                # Используем модель по умолчанию, если есть, иначе первую разрешенную
+                model_data = default_model or first_allowed_model
 
-                    logger.info(f"Создание текстового чата с моделью {model_id} (parent: {parent_id})")
+                if model_data is None:
+                    # Если не нашли ни одной подходящей модели, пробуем создать чат без указания модели
+                    logger.warning("Не найдено подходящих моделей, создаем чат без указания модели")
+                    response = await self.client.create_new_chat(
+                        access_token,
+                        user.bothub_group_id,
+                        name
+                    )
+                    model_id = None
+                else:
+                    model_id = model_data.get("id")
+                    logger.info(f"Выбрана модель {model_id} для создания чата")
 
-                    # Создаем чат с родительской моделью
+                    # Если у модели есть parent_id, используем его для создания чата
+                    parent_id = model_data.get("parent_id")
+
                     response = await self.client.create_new_chat(
                         access_token,
                         user.bothub_group_id,
                         name,
-                        parent_id
+                        parent_id or model_id
                     )
 
-                    # Если родительская модель отличается от выбранной, настраиваем модель чата
-                    if parent_id != model_id:
+                    # Если нужно, сохраняем модель в настройках чата
+                    if parent_id and model_id != parent_id:
                         await self.client.save_chat_settings(
                             access_token,
                             response["id"],
-                            model_id,
-                            None,  # max_tokens
-                            chat.context_remember,
-                            chat.system_prompt
+                            model_id
                         )
-                except Exception as model_error:
-                    # Если произошла ошибка при получении моделей, используем модель по умолчанию
-                    logger.error(f"Ошибка при получении списка моделей: {str(model_error)}")
 
-                    # Попробуем создать чат с моделью "gpt" как родительской
-                    model_id = "gpt-3.5-turbo"
-                    parent_id = "gpt"
-
-                    logger.info(f"Создание чата с моделью по умолчанию: {model_id} (parent: {parent_id})")
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        parent_id
-                    )
-
-                    # Устанавливаем модель для чата
-                    await self.client.save_chat_settings(
-                        access_token,
-                        response["id"],
-                        model_id,
-                        None,  # max_tokens
-                        chat.context_remember,
-                        chat.system_prompt
-                    )
+                    # Сохраняем модель как предпочтительную для пользователя
+                    if model_id:
+                        user.gpt_model = model_id
 
             # Обновляем данные чата
             chat.bothub_chat_id = response["id"]
-            chat.bothub_chat_model = response.get("model_id", model_id)
+            if model_id:
+                chat.bothub_chat_model = model_id
 
             # Если есть системный промпт, сохраняем его
             if chat.system_prompt:
@@ -205,52 +177,26 @@ class BothubGateway:
                     chat.system_prompt
                 )
 
+            # Сохраняем настройки контекста
+            max_tokens = 4000 if model_id and "gpt-" in model_id else None
+
+            await self.client.save_chat_settings(
+                access_token,
+                chat.bothub_chat_id,
+                model_id or "default",
+                max_tokens,
+                chat.context_remember,
+                chat.system_prompt
+            )
+
         except Exception as e:
             logger.error(f"Ошибка при создании чата: {str(e)}")
 
             # Если группа не найдена, создаем новую и пробуем снова
             if "404" in str(e) or "500" in str(e):
-                try:
-                    group_response = await self.client.create_new_group(access_token, "Telegram")
-                    user.bothub_group_id = group_response["id"]
-
-                    # Создаем чат заново, но без рекурсивного вызова
-                    name = f"Telegram Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-
-                    # Простой вариант с фиксированной моделью
-                    model_id = "gpt-3.5-turbo" if not is_image_generation else "dall-e"
-                    parent_id = "gpt" if not is_image_generation else model_id
-
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        parent_id
-                    )
-
-                    chat.bothub_chat_id = response["id"]
-                    chat.bothub_chat_model = model_id
-
-                    # Если модель отличается от родительской, настраиваем
-                    if parent_id != model_id:
-                        await self.client.save_chat_settings(
-                            access_token,
-                            response["id"],
-                            model_id,
-                            None,  # max_tokens
-                            chat.context_remember,
-                            chat.system_prompt
-                        )
-
-                    if chat.system_prompt:
-                        await self.client.save_system_prompt(
-                            access_token,
-                            chat.bothub_chat_id,
-                            chat.system_prompt
-                        )
-                except Exception as retry_error:
-                    logger.error(f"Ошибка при повторном создании чата: {str(retry_error)}")
-                    raise
+                group_response = await self.client.create_new_group(access_token, "Telegram")
+                user.bothub_group_id = group_response["id"]
+                await self.create_new_chat(user, chat, is_image_generation)
             else:
                 raise
 
@@ -387,54 +333,5 @@ class BothubGateway:
         Returns:
             str: Транскрибированный текст
         """
-        # Получаем токен доступа
         access_token = await self.get_access_token(user)
-
-        try:
-            # Проверяем существование файла перед отправкой
-            import os
-            if not os.path.exists(file_path):
-                logger.error(f"[TRANSCRIBE] Файл не существует: {file_path}")
-                return "Ошибка: файл не найден"
-
-            file_size = os.path.getsize(file_path)
-            if file_size < 100:
-                logger.error(f"[TRANSCRIBE] Файл слишком маленький ({file_size} байт)")
-                return "Ошибка: файл слишком маленький или поврежден"
-
-            logger.info(
-                f"[TRANSCRIBE] Отправка голосового сообщения на транскрибацию: {file_path}, размер: {file_size} байт")
-
-            # Пробуем отправить запрос на транскрибацию
-            try:
-                # Сначала пробуем через специальный эндпоинт Whisper
-                result = await self.client.whisper(access_token, file_path)
-                logger.info(f"[TRANSCRIBE] Результат транскрибации через Whisper API: {result[:50]}...")
-                return result
-            except Exception as whisper_error:
-                logger.error(f"[TRANSCRIBE] Ошибка при использовании Whisper API: {whisper_error}")
-
-                # Если не удалось через Whisper API, пробуем через обычный чат с вложением аудио
-                if not chat.bothub_chat_id:
-                    await self.create_new_chat(user, chat)
-
-                logger.info(f"[TRANSCRIBE] Пробуем отправить аудио в чат {chat.bothub_chat_id}")
-                result = await self.client.send_message(
-                    access_token,
-                    chat.bothub_chat_id,
-                    "Пожалуйста, транскрибируй это аудио:",
-                    files=None,
-                    audio_files=[file_path]
-                )
-
-                if "response" in result and "content" in result["response"]:
-                    content = result["response"]["content"]
-                    logger.info(f"[TRANSCRIBE] Результат через чат: {content[:50]}...")
-                    return content
-                else:
-                    logger.error(f"[TRANSCRIBE] Неожиданный формат ответа: {result}")
-                    return "Не удалось распознать голосовое сообщение через чат"
-
-        except Exception as e:
-            logger.error(f"[TRANSCRIBE] Ошибка при транскрибировании голосового сообщения: {e}", exc_info=True)
-            return f"Не удалось распознать голосовое сообщение. Ошибка: {str(e)}"
+        return await self.client.whisper(access_token, file_path)

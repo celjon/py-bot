@@ -1,10 +1,9 @@
 FROM ubuntu:24.04
 
-# Установка Python и зависимостей
+# Установка Python и pip
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
-    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -16,11 +15,7 @@ RUN apt-get update && apt-get install -y curl && \
     for i in 1 2 3; do apt-get update && apt-get install -y supervisor && break || sleep 5; done && \
     rm -rf /var/lib/apt/lists/*
 
-# Делаем скрипт ожидания исполняемым
-RUN chmod +x /app/wait-for-it.sh
-
 # Конфигурация supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Запускаем supervisor, который будет управлять запуском бота
 CMD ["/usr/bin/supervisord"]

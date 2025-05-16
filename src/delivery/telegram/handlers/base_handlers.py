@@ -1,5 +1,4 @@
 import logging
-import os
 from aiogram import Bot
 from aiogram.types import Message
 from src.domain.entity.user import User
@@ -78,182 +77,45 @@ async def send_long_message(message: Message, content: str, parse_mode: str = "M
         await message.answer(part, parse_mode=parse_mode)
 
 
-async def download_telegram_file(bot, file_id: str, save_path: str = None, settings=None):
-    """
-    Загружает файл из локального Telegram API, используя прямой доступ к файловой системе
+async def download_telegram_file(bot: Bot, token: str, file_id: str, save_path: str = None):
+    api_server = bot.session.api
+    get_file_url = api_server.api_url(token, "getFile")  # ✅ правильно!
 
-    Args:
-        bot: Экземпляр бота aiogram
-        file_id: ID файла в Telegram
-        save_path: Путь для сохранения файла (если None, создается временный файл)
-        settings: Настройки приложения
+    logger.info(f"Token: {token}")
+    logger.info(f"API server base: {api_server.base}")
+    logger.info(f"getFile URL: {get_file_url}")
 
-    Returns:
-        str: Путь к загруженному файлу
-    """
-    try:
-        # Получаем информацию о файле
-        logger.info(f"[FILE_DOWNLOAD] Получение информации о файле с ID: {file_id}")
-        file_info = await bot.get_file(file_id)
-        file_path = file_info.file_path
-        logger.info(f"[FILE_DOWNLOAD] Получен путь к файлу: {file_path}")
-        logger.info(f"[FILE_DOWNLOAD] Полная информация о файле: {file_info}")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(get_file_url, json={"file_id": file_id}) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"HTTP {response.status}: {error_text}")
+                raise Exception(f"Не удалось получить информацию о файле: HTTP {response.status}")
 
-        # Если путь не указан, создаем временный файл
-        if not save_path:
-            import tempfile
-            import os
-            import time
-            temp_dir = tempfile.gettempdir()
-            file_ext = os.path.splitext(file_path)[
-                           1] or '.ogg'  # Используем расширение из оригинального пути или .ogg по умолчанию
-            save_path = os.path.join(temp_dir, f"{file_id}_{int(time.time())}{file_ext}")
-            logger.info(f"[FILE_DOWNLOAD] Создан временный путь для сохранения: {save_path}")
+            file_info = await response.json()
+            if not file_info.get("ok"):
+                error = file_info.get("description", "Неизвестная ошибка")
+                raise Exception(f"Ошибка API Telegram: {error}")
 
-        # Создаем директорию для файла, если она не существует
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        logger.info(f"[FILE_DOWNLOAD] Директория для сохранения файла: {os.path.dirname(save_path)}")
+            file_path = file_info["result"]["file_path"]
+            logger.info(f"Raw file_path from Telegram: {file_path}")
+            download_url = api_server.file_url(token, file_path)
+            logger.info(f"Download file URL: {download_url}")
 
-        # Список всех путей, которые будем проверять
-        paths_to_check = [
-            # Прямой путь
-            file_path,
-            # Путь внутри контейнера Telegram Bot API
-            f"/telegram-bot-api-data{file_path}" if not file_path.startswith("/telegram-bot-api-data") else file_path,
-            # Путь с удаленным начальным слэшем
-            os.path.join("/telegram-bot-api-data", file_path.lstrip("/")),
-            # Дополнительные варианты, которые могут помочь найти файл
-            os.path.join("/telegram-bot-api-data/voice", os.path.basename(file_path)),
-            os.path.join("/telegram-bot-api-data/audio", os.path.basename(file_path))
-        ]
+            async with session.get(download_url) as download_response:
+                if download_response.status != 200:
+                    error_text = await download_response.text()
+                    logger.error(f"HTTP {download_response.status}: {error_text}")
+                    raise Exception(f"Не удалось скачать файл: HTTP {download_response.status}")
 
-        logger.info(f"[FILE_DOWNLOAD] Проверяем следующие пути: {paths_to_check}")
+                file_content = await download_response.read()
 
-        # Проверяем все возможные пути
-        for path in paths_to_check:
-            logger.info(f"[FILE_DOWNLOAD] Проверяем путь: {path}")
-            if os.path.exists(path):
-                logger.info(f"[FILE_DOWNLOAD] Файл найден по пути: {path}")
-                # Проверяем размер файла
-                file_size = os.path.getsize(path)
-                logger.info(f"[FILE_DOWNLOAD] Размер файла: {file_size} байт")
+                if save_path:
+                    import os
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    with open(save_path, "wb") as f:
+                        f.write(file_content)
+                    logger.info(f"Файл сохранен: {save_path}")
+                    return save_path
 
-                # Копируем файл
-                import shutil
-                shutil.copy(path, save_path)
-                logger.info(f"[FILE_DOWNLOAD] Файл успешно скопирован из: {path} -> {save_path}")
-                return save_path
-            else:
-                logger.info(f"[FILE_DOWNLOAD] Файл не найден по пути: {path}")
-
-        # Логируем текущую директорию и содержимое /telegram-bot-api-data для отладки
-        try:
-            logger.info(f"[FILE_DOWNLOAD] Текущая директория: {os.getcwd()}")
-            if os.path.exists("/telegram-bot-api-data"):
-                logger.info(f"[FILE_DOWNLOAD] Содержимое /telegram-bot-api-data:")
-                for root, dirs, files in os.walk("/telegram-bot-api-data", topdown=True, onerror=None):
-                    logger.info(f"[FILE_DOWNLOAD] Директория: {root}")
-                    logger.info(f"[FILE_DOWNLOAD] Поддиректории: {dirs}")
-                    logger.info(f"[FILE_DOWNLOAD] Файлы: {files}")
-                    # Ограничиваем глубину поиска, чтобы не переполнить логи
-                    if root.count('/') > 4:  # Максимальная глубина
-                        dirs[:] = []  # Не углубляемся дальше
-        except Exception as e:
-            logger.error(f"[FILE_DOWNLOAD] Ошибка при попытке вывести содержимое директории: {e}")
-
-        # Поиск по всей директории, если файл не найден по конкретным путям
-        file_name = os.path.basename(file_path)
-        logger.info(f"[FILE_DOWNLOAD] Ищем файл по имени: {file_name} в директории /telegram-bot-api-data")
-        for root, dirs, files in os.walk("/telegram-bot-api-data"):
-            if file_name in files:
-                found_path = os.path.join(root, file_name)
-                logger.info(f"[FILE_DOWNLOAD] Файл найден по пути: {found_path}")
-
-                # Проверяем размер файла
-                file_size = os.path.getsize(found_path)
-                logger.info(f"[FILE_DOWNLOAD] Размер файла: {file_size} байт")
-
-                import shutil
-                shutil.copy(found_path, save_path)
-                logger.info(f"[FILE_DOWNLOAD] Файл успешно скопирован: {found_path} -> {save_path}")
-                return save_path
-            # Ограничиваем глубину поиска, чтобы не тратить слишком много времени
-            if root.count('/') > 4:  # Максимальная глубина
-                dirs[:] = []  # Не углубляемся дальше
-
-        # Если файл не найден в файловой системе, пробуем HTTP-запрос
-        logger.warning(f"[FILE_DOWNLOAD] Файл не найден в файловой системе, пробуем HTTP-запрос")
-
-        # Используем настройки для получения базового URL
-        if not settings:
-            from src.config.settings import get_settings
-            settings = get_settings()
-            logger.info(f"[FILE_DOWNLOAD] Получены настройки: {settings.TELEGRAM_API_URL}")
-
-        # Базовый URL локального API
-        local_api_url = settings.TELEGRAM_API_URL.rstrip("/")
-        token = bot.token
-        logger.info(f"[FILE_DOWNLOAD] Используем API URL: {local_api_url}")
-
-        # Пробуем разные форматы URL
-        urls_to_try = [
-            f"{local_api_url}/file/bot{token}/{file_path}",
-            f"{local_api_url}/file/bot{token}/{file_path.lstrip('/')}",
-            f"{local_api_url}/file/bot{token}/voice/{os.path.basename(file_path)}",
-            f"{local_api_url}/file/bot{token}/audio/{os.path.basename(file_path)}",
-            # Попробуем прямой URL
-            f"https://api.telegram.org/file/bot{token}/{file_path}"
-        ]
-
-        logger.info(f"[FILE_DOWNLOAD] Пробуем следующие URL: {urls_to_try}")
-
-        for url in urls_to_try:
-            logger.info(f"[FILE_DOWNLOAD] Пробуем URL: {url}")
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as response:
-                        status = response.status
-                        logger.info(f"[FILE_DOWNLOAD] Статус ответа от {url}: {status}")
-
-                        if status == 200:
-                            content = await response.read()
-                            content_length = len(content)
-                            logger.info(f"[FILE_DOWNLOAD] Получено {content_length} байт с URL {url}")
-
-                            if content_length > 100:  # Проверка, что файл не пустой
-                                with open(save_path, "wb") as f:
-                                    f.write(content)
-                                logger.info(f"[FILE_DOWNLOAD] Файл успешно скачан с URL {url} и сохранен в {save_path}")
-                                return save_path
-                            else:
-                                logger.warning(
-                                    f"[FILE_DOWNLOAD] Получено слишком мало данных ({content_length} байт) с URL {url}")
-                        else:
-                            headers = response.headers
-                            body = await response.text()
-                            logger.error(f"[FILE_DOWNLOAD] Ошибка при загрузке с URL {url}: HTTP {status}")
-                            logger.error(f"[FILE_DOWNLOAD] Заголовки: {headers}")
-                            logger.error(f"[FILE_DOWNLOAD] Тело ответа: {body[:200]}...")  # Логируем только начало тела
-            except Exception as url_error:
-                logger.error(f"[FILE_DOWNLOAD] Ошибка при запросе URL {url}: {url_error}")
-
-        # Если все попытки не удались - создаем пустой файл для тестирования дальнейшего процесса
-        logger.error("[FILE_DOWNLOAD] Все попытки скачать файл не удались. Создаем пустой файл для тестирования.")
-        with open(save_path, "wb") as f:
-            f.write(b"Test file - failed to download real content")
-
-        logger.warning(f"[FILE_DOWNLOAD] Создан пустой файл для тестирования: {save_path}")
-        return save_path
-
-    except Exception as e:
-        logger.error(f"[FILE_DOWNLOAD] Общая ошибка при скачивании файла: {e}", exc_info=True)
-
-        # Создаем пустой файл для тестирования дальнейшего процесса
-        try:
-            with open(save_path, "wb") as f:
-                f.write(b"Test file - exception occurred during download")
-            logger.warning(f"[FILE_DOWNLOAD] Создан пустой файл для тестирования: {save_path}")
-            return save_path
-        except Exception as file_error:
-            logger.error(f"[FILE_DOWNLOAD] Ошибка при создании файла заглушки: {file_error}")
-            raise Exception(f"Не удалось скачать файл: {e}")
+                return file_content
