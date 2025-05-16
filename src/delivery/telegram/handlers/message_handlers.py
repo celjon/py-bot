@@ -1,4 +1,3 @@
-# src/delivery/telegram/handlers/message_handlers.py
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums.chat_action import ChatAction
@@ -12,13 +11,78 @@ from typing import List, Dict, Any, Optional, Tuple
 from src.config.settings import Settings
 from ..keyboards.main_keyboard import get_main_keyboard
 from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file
+# Импортируем функцию для обработки команды /gpt_config
+
 
 logger = logging.getLogger(__name__)
-
 
 def register_message_handlers(router: Router, chat_session_usecase, intent_detection_service, user_repository,
                               chat_repository, settings):
     """Регистрация обработчиков текстовых сообщений"""
+
+    @router.message(F.text.startswith("🔄 Новый чат"))
+    async def handle_new_chat_button(message: Message):
+        """Обработка нажатия на кнопку 'Новый чат'"""
+        try:
+            user = await get_or_create_user(message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+
+            # Сбрасываем счетчик контекста
+            chat.reset_context_counter()
+            await chat_repository.update(chat)
+
+            # Показываем "печатает"
+            await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+            # Создаем новый чат в BotHub API
+            await chat_session_usecase.create_new_chat(user, chat)
+
+            # Формируем сообщение о новом чате с информацией о модели
+            model_info = f"Начат новый чат с моделью *{chat.bothub_chat_model or 'по умолчанию'}*"
+
+            # Добавляем информацию о контексте
+            if chat.context_remember:
+                context_info = "\n\nКонтекст включен. Используйте /reset для сброса контекста."
+            else:
+                context_info = "\n\nКонтекст отключен. Каждое сообщение обрабатывается отдельно."
+
+            await message.answer(
+                f"{model_info}{context_info}",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(user, chat)
+            )
+
+            logger.info(f"Создан новый чат для пользователя {user.id} с моделью {chat.bothub_chat_model}")
+
+        except Exception as e:
+            logger.error(f"Ошибка при создании нового чата: {str(e)}", exc_info=True)
+            await message.answer(
+                "Произошла ошибка при создании нового чата. Попробуйте еще раз.",
+                parse_mode="Markdown"
+            )
+
+    # Добавляем обработчик для кнопки "Сменить модель"
+    @router.message(F.text.startswith("⚙️ Сменить модель"))
+    async def handle_change_model_button(message: Message):
+        """Обработка нажатия на кнопку 'Сменить модель'"""
+        try:
+            # Просто отправляем команду /gpt_config
+            await message.bot.send_message(
+                chat_id=message.chat.id,
+                text="/gpt_config"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при смене модели: {str(e)}", exc_info=True)
+            await message.answer(
+                "Произошла ошибка. Пожалуйста, используйте команду /gpt_config для выбора модели.",
+                parse_mode="Markdown"
+            )
+
+    # Общий обработчик текстовых сообщений (должен быть последним)
+    @router.message(F.text)
+    async def handle_text_message(message: Message):
+        """Обработка текстовых сообщений"""
+        # Весь оригинальный код обработчика
 
     @router.message(F.text)
     async def handle_text_message(message: Message):
@@ -56,13 +120,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 return
 
             # Проверяем, не является ли сообщение командой клавиатуры
-            if message.text == "🔄 Новый чат":
-                await message.answer(
-                    "Функция создания нового чата будет реализована позже.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-                return
+
 
             elif message.text == "🎨 Генерация изображений":
                 await message.answer(
@@ -222,6 +280,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 "❌ Произошла ошибка при обработке сообщения. Попробуйте еще раз.",
                 parse_mode="Markdown"
             )
+
 
     @router.message(F.voice)
     async def handle_voice_message(message: Message):

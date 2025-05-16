@@ -2,6 +2,7 @@
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
+from aiogram.enums.chat_action import ChatAction
 import logging
 from ..services.keyboard_factory import KeyboardFactory
 from ..services.callback_data import CallbackData
@@ -90,7 +91,7 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
             user = await get_or_create_user(callback.message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
 
-            # Обновляем модель
+            # Обновляем информацию о выбранной модели
             chat.bothub_chat_model = model_id
             chat.reset_context_counter()
             user.gpt_model = model_id
@@ -98,32 +99,57 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
             await user_repository.update(user)
             await chat_repository.update(chat)
 
+            # Закрываем инлайн-клавиатуру
+            await callback.message.edit_reply_markup(reply_markup=None)
+
+            # Отправляем сообщение о том, что модель выбрана
+            await callback.message.answer(
+                f"Выбрана модель *{model_id}*. Создаю новый чат...",
+                parse_mode="Markdown"
+            )
+
+            # Показываем "печатает", пока создается чат
+            await callback.message.bot.send_chat_action(callback.message.chat.id, ChatAction.TYPING)
+
             # Создаем новый чат с выбранной моделью
             from src.adapter.gateway.bothub_gateway import BothubGateway
             from src.lib.clients.bothub_client import BothubClient
             from src.config.settings import get_settings
+            from src.domain.usecase.chat_session import ChatSessionUseCase
 
+            # Создаем временные объекты для создания чата
             settings = get_settings()
             bothub_client = BothubClient(settings)
             bothub_gateway = BothubGateway(bothub_client)
+            chat_session = ChatSessionUseCase(bothub_gateway)
 
-            await bothub_gateway.create_new_chat(user, chat)
+            # Создаем новый чат
+            await chat_session.create_new_chat(user, chat)
 
-            # Закрываем инлайн клавиатуру
-            await callback.message.edit_reply_markup(reply_markup=None)
+            # Формируем сообщение о новом чате
+            model_info = f"Начат новый чат с моделью *{model_id}*"
 
-            # Отправляем сообщение об успешном выборе модели
+            # Добавляем информацию о контексте
+            if chat.context_remember:
+                context_info = "\n\nКонтекст включен. Используйте /reset для сброса контекста."
+            else:
+                context_info = "\n\nКонтекст отключен. Каждое сообщение обрабатывается отдельно."
+
             await callback.message.answer(
-                f"✅ Модель *{model_id}* успешно выбрана. Начните новый чат, чтобы изменения вступили в силу.",
+                f"{model_info}{context_info}",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(user, chat)
             )
 
-            logger.info(f"Пользователь {user.id} выбрал модель {model_id}")
+            logger.info(f"Пользователь {user.id} выбрал модель {model_id} и создал новый чат")
 
         except Exception as e:
             logger.error(f"Ошибка при выборе модели: {e}", exc_info=True)
             await callback.answer("Произошла ошибка при выборе модели")
+            await callback.message.answer(
+                f"❌ Произошла ошибка при выборе модели: {str(e)}",
+                parse_mode="Markdown"
+            )
 
     # Обработчик для недоступных моделей
     @router.callback_query(callback_with_type(CallbackType.UNAVAILABLE_MODEL))

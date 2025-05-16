@@ -94,57 +94,77 @@ class BothubGateway:
 
             # Выбор модели в зависимости от типа чата
             if is_image_generation:
-                model_id = user.image_generation_model or "dall-e"
-
-                logger.info(f"Создание чата для генерации изображений с моделью {model_id}")
-                response = await self.client.create_new_chat(
-                    access_token,
-                    user.bothub_group_id,
-                    name,
-                    model_id
-                )
-            else:
-                # Получаем список доступных моделей
-                models = await self.client.list_models(access_token)
-
-                # Находим модель по умолчанию или первую доступную текстовую модель
-                default_model = None
-                first_allowed_model = None
-
-                for model in models:
-                    # Проверяем, является ли модель текстовой
-                    is_text_model = "TEXT_TO_TEXT" in model.get("features", [])
-                    is_allowed = model.get("is_allowed", False)
-
-                    if is_text_model and is_allowed:
-                        # Приоритет - модель по умолчанию
-                        if model.get("is_default", False):
-                            default_model = model
-                            break
-
-                        # Если еще не нашли разрешенную модель, сохраняем первую
-                        if first_allowed_model is None:
-                            first_allowed_model = model
-
-                # Используем модель по умолчанию, если есть, иначе первую разрешенную
-                model_data = default_model or first_allowed_model
-
-                if model_data is None:
-                    # Если не нашли ни одной подходящей модели, пробуем создать чат без указания модели
-                    logger.warning("Не найдено подходящих моделей, создаем чат без указания модели")
+                # Логика для создания чата генерации изображений
+                if user.image_generation_model and "flux" in user.image_generation_model:
+                    # Логика для моделей Flux (аналог PHP-логики)
                     response = await self.client.create_new_chat(
                         access_token,
                         user.bothub_group_id,
-                        name
+                        name,
+                        "replicate-flux"  # Родительская модель для Flux
                     )
-                    model_id = None
+
+                    # Обновляем родительскую модель
+                    await self.client.update_parent_model(
+                        access_token,
+                        response["id"],
+                        "replicate-flux"
+                    )
+
+                    # Сохраняем конкретную модель
+                    await self.client.save_model(
+                        access_token,
+                        response["id"],
+                        user.image_generation_model
+                    )
+
+                    model_id = user.image_generation_model
                 else:
-                    model_id = model_data.get("id")
-                    logger.info(f"Выбрана модель {model_id} для создания чата")
+                    # Для других моделей генерации изображений
+                    model_id = user.image_generation_model or "dall-e"
+                    response = await self.client.create_new_chat(
+                        access_token,
+                        user.bothub_group_id,
+                        name,
+                        model_id
+                    )
+            else:
+                # Логика для создания текстового чата
 
-                    # Если у модели есть parent_id, используем его для создания чата
-                    parent_id = model_data.get("parent_id")
+                # Получаем список доступных моделей
+                models = await self.client.list_models(access_token)
 
+                # Выбираем модель по умолчанию, используя логику аналогичную PHP-реализации
+                default_model = None
+                for model in models:
+                    if (model.get("is_default", False) or model.get("is_allowed",
+                                                                    True)) and "TEXT_TO_TEXT" in model.get("features",
+                                                                                                           []):
+                        default_model = model
+                        break
+
+                if not default_model:
+                    # Если не найдена подходящая модель, используем известные модели
+                    for backup_model_id in ["gpt-4o", "gpt-3.5-turbo", "claude-3-haiku"]:
+                        for model in models:
+                            if model.get("id") == backup_model_id and model.get("is_allowed", False):
+                                default_model = model
+                                break
+                        if default_model:
+                            break
+
+                if not default_model:
+                    # Если все еще не найдена модель, используем первую доступную
+                    for model in models:
+                        if model.get("is_allowed", False) and "TEXT_TO_TEXT" in model.get("features", []):
+                            default_model = model
+                            break
+
+                if default_model:
+                    model_id = default_model.get("id")
+                    parent_id = default_model.get("parent_id")
+
+                    # Создаем чат с родительской моделью
                     response = await self.client.create_new_chat(
                         access_token,
                         user.bothub_group_id,
@@ -152,53 +172,72 @@ class BothubGateway:
                         parent_id or model_id
                     )
 
-                    # Если нужно, сохраняем модель в настройках чата
-                    if parent_id and model_id != parent_id:
+                    # Проверяем, нужно ли применять особые настройки для чата
+                    should_save_settings = (
+                            (chat.bothub_chat_model and chat.bothub_chat_model != model_id) or
+                            not chat.context_remember or
+                            chat.system_prompt
+                    )
+
+                    if should_save_settings:
+                        # Определяем максимальное количество токенов
+                        max_tokens = None
+                        if chat.bothub_chat_model:
+                            # Проверяем, не является ли модель моделью для генерации изображений
+                            model_is_text = True  # здесь нужна функция проверки типа модели
+                            for m in models:
+                                if m.get("id") == chat.bothub_chat_model:
+                                    if "TEXT_TO_IMAGE" in m.get("features", []):
+                                        model_is_text = False
+                                    break
+
+                            if model_is_text:
+                                # Если есть модель и это текстовая модель
+                                model_to_use = None
+                                for m in models:
+                                    if m.get("id") == chat.bothub_chat_model:
+                                        model_to_use = m
+                                        break
+
+                                if model_to_use:
+                                    model_id = model_to_use.get("id")
+                                    # Устанавливаем максимальное количество токенов
+                                    if "max_tokens" in model_to_use:
+                                        max_tokens = int(model_to_use.get("max_tokens") / 2)
+
+                        # Сохраняем настройки чата
                         await self.client.save_chat_settings(
                             access_token,
                             response["id"],
-                            model_id
+                            model_id,
+                            max_tokens,
+                            chat.context_remember,
+                            chat.system_prompt
                         )
-
-                    # Сохраняем модель как предпочтительную для пользователя
-                    if model_id:
-                        user.gpt_model = model_id
+                else:
+                    # Если не найдена ни одна модель, создаем чат без указания модели
+                    response = await self.client.create_new_chat(
+                        access_token,
+                        user.bothub_group_id,
+                        name
+                    )
+                    model_id = None
 
             # Обновляем данные чата
             chat.bothub_chat_id = response["id"]
             if model_id:
                 chat.bothub_chat_model = model_id
 
-            # Если есть системный промпт, сохраняем его
-            if chat.system_prompt:
-                await self.client.save_system_prompt(
-                    access_token,
-                    chat.bothub_chat_id,
-                    chat.system_prompt
-                )
-
-            # Сохраняем настройки контекста
-            max_tokens = 4000 if model_id and "gpt-" in model_id else None
-
-            await self.client.save_chat_settings(
-                access_token,
-                chat.bothub_chat_id,
-                model_id or "default",
-                max_tokens,
-                chat.context_remember,
-                chat.system_prompt
-            )
-
         except Exception as e:
             logger.error(f"Ошибка при создании чата: {str(e)}")
 
-            # Если группа не найдена, создаем новую и пробуем снова
+            # Если группа не найдена или возникла ошибка 500, создаем новую и пробуем снова
             if "404" in str(e) or "500" in str(e):
                 group_response = await self.client.create_new_group(access_token, "Telegram")
                 user.bothub_group_id = group_response["id"]
                 await self.create_new_chat(user, chat, is_image_generation)
             else:
-                raise
+                raise Exception(f"Не удалось создать чат: {str(e)}")
 
 
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[

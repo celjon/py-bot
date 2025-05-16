@@ -24,7 +24,16 @@ class ChatSessionUseCase:
             is_image_generation: Флаг для чата с генерацией изображений
         """
         logger.info(f"Создание нового чата для пользователя {user.id}")
+
+        # Сбрасываем счетчик контекста
+        chat.reset_context_counter()
+
+        # Создаем чат через gateway
         await self.gateway.create_new_chat(user, chat, is_image_generation)
+
+        # В PHP также обновляется буфер, если он есть
+        if hasattr(chat, 'buffer') and chat.buffer:
+            chat.refresh_buffer()
 
     async def send_message(self, user: User, chat: Chat, message: str, files: Optional[List[str]] = None) -> Dict[
         str, Any]:

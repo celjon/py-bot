@@ -2,31 +2,15 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
 
-def get_main_keyboard(user: User, chat: Chat) -> ReplyKeyboardMarkup:
-    """Создание основной клавиатуры бота"""
-    chat_buttons = get_chat_buttons(user.current_chat_index)
-
-    web_search_text = "🔍 Поиск в интернете"
-    if hasattr(chat, 'web_search_enabled') and chat.web_search_enabled:
-        web_search_text += " ✅"
-    else:
-        web_search_text += " ❌"
-
+def get_main_keyboard(user: User, chat: Chat = None) -> ReplyKeyboardMarkup:
+    """Создает основную клавиатуру только с необходимыми кнопками"""
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="🔄 Новый чат"),
-                KeyboardButton(text=web_search_text),
-                KeyboardButton(text="🎨 Генерация изображений")
-            ],
-            [
-                KeyboardButton(text="⚙️ Инструменты"),
-                KeyboardButton(text="📋 Буфер")
-            ] + chat_buttons
+            [KeyboardButton(text="🔄 Новый чат"), KeyboardButton(text="⚙️ Сменить модель")],
+            [KeyboardButton(text="🔗 Привязать аккаунт")]
         ],
         resize_keyboard=True
     )
-
     return keyboard
 
 def get_chat_buttons(current_chat_index: int):
