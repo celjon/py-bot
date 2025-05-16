@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from src.config.settings import Settings
 from ..keyboards.main_keyboard import get_main_keyboard
 from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file
+from ..services.model_service import show_model_selection
+from ..services.keyboard_factory import KeyboardFactory
 # Импортируем функцию для обработки команды /gpt_config
 
 
@@ -66,11 +68,7 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
     async def handle_change_model_button(message: Message):
         """Обработка нажатия на кнопку 'Сменить модель'"""
         try:
-            # Просто отправляем команду /gpt_config
-            await message.bot.send_message(
-                chat_id=message.chat.id,
-                text="/gpt_config"
-            )
+            await show_model_selection(message, user_repository, chat_repository)
         except Exception as e:
             logger.error(f"Ошибка при смене модели: {str(e)}", exc_info=True)
             await message.answer(
@@ -78,11 +76,6 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 parse_mode="Markdown"
             )
 
-    # Общий обработчик текстовых сообщений (должен быть последним)
-    @router.message(F.text)
-    async def handle_text_message(message: Message):
-        """Обработка текстовых сообщений"""
-        # Весь оригинальный код обработчика
 
     @router.message(F.text)
     async def handle_text_message(message: Message):

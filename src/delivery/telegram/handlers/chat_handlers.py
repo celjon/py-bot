@@ -63,7 +63,6 @@ def register_chat_handlers(router: Router, chat_session_usecase, user_repository
                 return
 
             # Отправляем запрос на продолжение разговора
-            # Сообщаем пользователю, что бот печатает
             await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
             # Отправляем запрос в BotHub API

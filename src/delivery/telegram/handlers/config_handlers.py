@@ -9,6 +9,12 @@ from ..services.callback_data import CallbackData
 from ..services.callback_types import CallbackType
 from ..keyboards.main_keyboard import get_main_keyboard
 from .base_handlers import get_or_create_user, get_or_create_chat
+from ..services.model_service import show_model_selection
+from src.adapter.gateway.bothub_gateway import BothubGateway
+from src.lib.clients.bothub_client import BothubClient
+from src.config.settings import get_settings
+from src.domain.usecase.chat_session import ChatSessionUseCase
+
 
 logger = logging.getLogger(__name__)
 
@@ -19,54 +25,8 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
     @router.message(Command("gpt_config"))
     async def handle_gpt_config(message: Message):
         """Обработка команды /gpt_config для настройки моделей"""
-        try:
-            # Получаем пользователя и чат
-            user = await get_or_create_user(message, user_repository)
-            chat = await get_or_create_chat(user, chat_repository)
+        await show_model_selection(message, user_repository, chat_repository)
 
-            logger.info(f"Пользователь {user.id} запросил настройку GPT моделей")
-
-            # Получаем доступные модели
-            from src.adapter.gateway.bothub_gateway import BothubGateway
-            from src.lib.clients.bothub_client import BothubClient
-            from src.config.settings import get_settings
-
-            settings = get_settings()
-            bothub_client = BothubClient(settings)
-            bothub_gateway = BothubGateway(bothub_client)
-
-            # Получаем токен доступа и список моделей
-            access_token = await bothub_gateway.get_access_token(user)
-            models = await bothub_client.list_models(access_token)
-
-            # Фильтруем текстовые модели
-            text_models = [
-                model for model in models
-                if "TEXT_TO_TEXT" in model.get("features", [])
-            ]
-
-            if not text_models:
-                await message.answer(
-                    "⚠️ Не удалось получить список моделей",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-                return
-
-            # Отправляем клавиатуру выбора модели
-            keyboard = KeyboardFactory.create_model_selection(text_models, chat.bothub_chat_model)
-            await message.answer(
-                "Выберите модель ChatGPT",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-        except Exception as e:
-            logger.error(f"Ошибка при обработке команды gpt_config: {e}", exc_info=True)
-            await message.answer(
-                "❌ Не удалось получить список моделей. Попробуйте позже.",
-                parse_mode="Markdown"
-            )
 
     # Создаем функцию для проверки типа callback
     def callback_with_type(callback_type):
@@ -112,10 +72,7 @@ def register_config_handlers(router: Router, user_repository, chat_repository):
             await callback.message.bot.send_chat_action(callback.message.chat.id, ChatAction.TYPING)
 
             # Создаем новый чат с выбранной моделью
-            from src.adapter.gateway.bothub_gateway import BothubGateway
-            from src.lib.clients.bothub_client import BothubClient
-            from src.config.settings import get_settings
-            from src.domain.usecase.chat_session import ChatSessionUseCase
+
 
             # Создаем временные объекты для создания чата
             settings = get_settings()
