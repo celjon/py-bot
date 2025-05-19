@@ -35,6 +35,8 @@ class BothubGateway:
         if (user.bothub_access_token and user.bothub_access_token_created_at and
                 (current_time - user.bothub_access_token_created_at).total_seconds() < token_lifetime):
             logger.debug(f"Использую существующий токен для пользователя {user.id}")
+            logger.info(
+                f"🔑 ACCESS TOKEN для пользователя {user.id} (TG: {user.telegram_id}): {user.bothub_access_token}")
             return user.bothub_access_token
 
         # Получаем новый токен
@@ -49,6 +51,9 @@ class BothubGateway:
         # Обновляем данные пользователя
         user.bothub_access_token = response["accessToken"]
         user.bothub_access_token_created_at = current_time
+
+        logger.info(
+            f"🔑 НОВЫЙ ACCESS TOKEN для пользователя {user.id} (TG: {user.telegram_id}): {user.bothub_access_token}")
 
         if not user.bothub_id:
             user.bothub_id = response["user"]["id"]

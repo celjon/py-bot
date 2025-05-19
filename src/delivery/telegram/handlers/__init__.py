@@ -1,3 +1,4 @@
+# src/delivery/telegram/handlers/__init__.py
 from aiogram import Router
 from .command_handlers import register_command_handlers
 from .config_handlers import register_config_handlers
@@ -59,14 +60,15 @@ def setup_handlers(
         chat_repository
     )
 
-    # Регистрируем обработчики текстовых сообщений
+    # Регистрируем обработчики текстовых сообщений (ВАЖНО: добавили account_connection_usecase)
     register_message_handlers(
         main_router,
         chat_session_usecase,
         intent_detection_service,
         user_repository,
         chat_repository,
-        settings
+        settings,
+        account_connection_usecase  # Добавили этот параметр
     )
 
     return main_router
