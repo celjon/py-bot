@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 
 from src.config.settings import get_settings, Settings
+from src.config.database import get_db_path  # Добавим импорт
 from src.adapter.repository.user_repository import UserRepository
 
 # Настройка логирования
@@ -17,13 +18,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Путь к базе данных
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'bothub.db')
+# Используем единый путь к БД
+DB_PATH = get_db_path()
 
 app = FastAPI(title="BotHub WebHook Server",
               description="API для обработки вебхуков от BotHub",
               version="1.0.0")
-
 
 async def get_user_repository():
     """Получение репозитория пользователей"""
@@ -39,8 +39,14 @@ async def bothub_webhook(
 ):
     """Обработчик вебхуков от BotHub"""
     try:
+        # Логируем все заголовки для отладки
+        logger.info(f"Получен вебхук. Заголовки: {dict(request.headers)}")
+
         # Проверяем секретный ключ
         bot_secret_key = request.headers.get("botsecretkey")
+        logger.info(f"Secret key from header: {bot_secret_key}")
+        logger.info(f"Expected secret key: {settings.BOTHUB_SECRET_KEY}")
+
         if not bot_secret_key or bot_secret_key != settings.BOTHUB_SECRET_KEY:
             logger.error(f"Неверный секретный ключ вебхука: {bot_secret_key}")
             return JSONResponse(
@@ -52,6 +58,8 @@ async def bothub_webhook(
         try:
             body = await request.body()
             text = body.decode('utf-8')
+            logger.info(f"Raw webhook body: {text}")
+
             if not text:
                 logger.error("Пустое тело запроса")
                 return JSONResponse(
@@ -60,6 +68,7 @@ async def bothub_webhook(
                 )
 
             data = json.loads(text)
+            logger.info(f"Parsed webhook data: {data}")
         except Exception as e:
             logger.error(f"Ошибка при парсинге JSON: {str(e)}")
             return JSONResponse(
@@ -79,6 +88,13 @@ async def bothub_webhook(
 
         # Обрабатываем разные типы вебхуков
         if data["type"] == "merge":
+            # Проверяем, что это вебхук для Python-бота
+            if not data.get("pythonBot"):
+                logger.info("Получен вебхук merge для PHP-бота, игнорируем")
+                return {"status": "ignored - php bot"}
+
+            logger.info("Обрабатываем merge для Python-бота")
+
             # Обработка привязки аккаунта
             if not data.get("oldId") or not data.get("newId") or "email" not in data:
                 logger.error(f"Некорректные данные для типа 'merge': {data}")
@@ -96,6 +112,8 @@ async def bothub_webhook(
                     content={"error": "Пользователь не найден"}
                 )
 
+            logger.info(f"Найден пользователь {user.id} для merge")
+
             # Обновляем данные пользователя
             user.bothub_id = data["newId"]
             user.email = data["email"]
@@ -106,30 +124,16 @@ async def bothub_webhook(
             await user_repository.update(user)
 
             logger.info(f"Аккаунт пользователя {user.id} успешно привязан к аккаунту {data['email']}")
+
+            # Отправляем уведомление пользователю (если возможно)
+            # TODO: Добавить отправку уведомления через бота
+
             return {"status": "success"}
 
         # Другие типы вебхуков
-        elif data["type"] == "message":
-            # Просто логируем получение вебхука типа 'message' 
-            # Полная имплементация требует больше кода
-            logger.info(f"Получен вебхук типа 'message'")
-            return {"status": "success"}
-
-        elif data["type"] == "present":
-            # Просто логируем получение вебхука типа 'present'
-            # Полная имплементация требует больше кода
-            logger.info(f"Получен вебхук типа 'present'")
-            return {"status": "success"}
-
-        elif data["type"] == "presentViaEmail":
-            # Просто логируем получение вебхука типа 'presentViaEmail'
-            # Полная имплементация требует больше кода
-            logger.info(f"Получен вебхук типа 'presentViaEmail'")
-            return {"status": "success"}
-
         else:
             logger.warning(f"Неизвестный тип вебхука: {data['type']}")
-            return {"status": "success"}
+            return {"status": "unknown_type"}
 
     except Exception as e:
         logger.error(f"Ошибка при обработке вебхука BotHub: {str(e)}", exc_info=True)
@@ -139,10 +143,17 @@ async def bothub_webhook(
         )
 
 
+# Добавим эндпоинт для проверки работы ngrok
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""
-    return {"status": "ok"}
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/test-webhook")
+async def test_webhook():
+    """Тестовый эндпоинт для проверки доступности"""
+    return {"message": "Webhook server is running", "timestamp": datetime.now().isoformat()}
 
 
 if __name__ == "__main__":

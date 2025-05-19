@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     BOTHUB_API_URL: str
     BOTHUB_SECRET_KEY: str
     BOTHUB_WEB_URL: str = "https://bothub.chat"  # URL веб-интерфейса BotHub
+    WEBHOOK_URL: str
 
     # Настройки приложения
     DEBUG: bool = False

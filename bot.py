@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from src.config.settings import get_settings
+from src.config.database import get_db_path  # Добавим импорт
 from src.delivery.telegram.bot import create_bot
 from src.adapter.repository.user_repository import UserRepository
 from src.adapter.repository.chat_repository import ChatRepository
@@ -13,15 +14,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Путь к базе данных
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'bothub.db')
-
+# Используем единый путь к БД
+DB_PATH = get_db_path()
 
 async def init_db():
     """Инициализация базы данных"""
-    # Создаем директорию для базы данных, если она не существует
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
     logger.info(f"Initializing database at {DB_PATH}")
 
     # Инициализация репозиториев
