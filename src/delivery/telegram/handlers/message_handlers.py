@@ -9,7 +9,8 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from src.config.settings import Settings
 from ..keyboards.main_keyboard import get_main_keyboard
-from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file
+from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file, \
+    get_user_from_telegram_user
 from ..services.model_service import show_model_selection
 
 logger = logging.getLogger(__name__)

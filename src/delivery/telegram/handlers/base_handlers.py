@@ -1,31 +1,45 @@
 import logging
 from aiogram import Bot
-from aiogram.types import Message
+from aiogram.types import Message, User as TelegramUser
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
 import aiohttp
+
 logger = logging.getLogger(__name__)
 
-async def get_or_create_user(message: Message, user_repository):
-    """Получение или создание пользователя из сообщения Telegram"""
-    telegram_id = str(message.from_user.id)
+
+async def get_user_from_telegram_user(telegram_user: TelegramUser, user_repository):
+    """Универсальная функция для получения/создания пользователя из TelegramUser"""
+    telegram_id = str(telegram_user.id)
     user = await user_repository.find_by_telegram_id(telegram_id)
 
     if not user:
         user = User(
             id=0,  # Временный ID, будет заменён после сохранения
             telegram_id=telegram_id,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
-            username=message.from_user.username,
-            language_code=message.from_user.language_code,
+            first_name=telegram_user.first_name,
+            last_name=telegram_user.last_name,
+            username=telegram_user.username,
+            language_code=telegram_user.language_code,
             current_chat_index=1,
             current_chat_list_page=1
         )
         user_id = await user_repository.save(user)
         user.id = user_id
+        logger.info(f"Создан новый пользователь {user_id} для Telegram ID {telegram_id}")
 
     return user
+
+
+async def get_or_create_user(message: Message, user_repository):
+    """Получение или создание пользователя из сообщения Telegram"""
+    return await get_user_from_telegram_user(message.from_user, user_repository)
+
+
+async def get_or_create_user_from_callback(callback, user_repository):
+    """Получение или создание пользователя из callback запроса"""
+    return await get_user_from_telegram_user(callback.from_user, user_repository)
+
 
 async def get_or_create_chat(user: User, chat_repository):
     """Получение или создание чата для пользователя"""
@@ -53,6 +67,7 @@ async def get_or_create_chat(user: User, chat_repository):
 
     return chat
 
+
 async def send_long_message(message: Message, content: str, parse_mode: str = "Markdown"):
     """Отправляет длинное сообщение, разбивая его на части, если необходимо."""
     max_length = 3900 if parse_mode == "Markdown" else 4096
@@ -79,11 +94,7 @@ async def send_long_message(message: Message, content: str, parse_mode: str = "M
 
 async def download_telegram_file(bot: Bot, token: str, file_id: str, save_path: str = None):
     api_server = bot.session.api
-    get_file_url = api_server.api_url(token, "getFile")  # ✅ правильно!
-
-    logger.info(f"Token: {token}")
-    logger.info(f"API server base: {api_server.base}")
-    logger.info(f"getFile URL: {get_file_url}")
+    get_file_url = api_server.api_url(token, "getFile")
 
     async with aiohttp.ClientSession() as session:
         async with session.post(get_file_url, json={"file_id": file_id}) as response:
@@ -98,9 +109,7 @@ async def download_telegram_file(bot: Bot, token: str, file_id: str, save_path: 
                 raise Exception(f"Ошибка API Telegram: {error}")
 
             file_path = file_info["result"]["file_path"]
-            logger.info(f"Raw file_path from Telegram: {file_path}")
             download_url = api_server.file_url(token, file_path)
-            logger.info(f"Download file URL: {download_url}")
 
             async with session.get(download_url) as download_response:
                 if download_response.status != 200:

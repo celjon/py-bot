@@ -3,7 +3,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 import logging
 from ..keyboards.main_keyboard import get_main_keyboard
-from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message
+from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, get_user_from_telegram_user
 from aiogram.enums.chat_action import ChatAction
 
 logger = logging.getLogger(__name__)

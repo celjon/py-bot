@@ -33,7 +33,6 @@ def get_default_model(models: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "TEXT_TO_TEXT" in model.get("features", []):
             return model
 
-
     # Если все еще ничего не нашли, возвращаем первую модель из списка или None
     return models[0] if models else None
 
@@ -44,15 +43,13 @@ async def show_model_selection(message, user_repository, chat_repository):
         # Импортируем необходимые функции здесь, чтобы избежать циклических импортов
         from ..handlers.base_handlers import get_or_create_user, get_or_create_chat
 
-        # Получаем пользователя и чат
+        # ИСПРАВЛЕНИЕ: Получаем пользователя из message, а не callback!
         user = await get_or_create_user(message, user_repository)
         chat = await get_or_create_chat(user, chat_repository)
 
         logger.info(f"Пользователь {user.id} запросил настройку GPT моделей")
 
         # Получаем доступные модели
-
-
         settings = get_settings()
         bothub_client = BothubClient(settings)
         bothub_gateway = BothubGateway(bothub_client)
@@ -61,11 +58,33 @@ async def show_model_selection(message, user_repository, chat_repository):
         access_token = await bothub_gateway.get_access_token(user)
         models = await bothub_client.list_models(access_token)
 
+        # ДОБАВЛЯЕМ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ
+        logger.info(f"=== ПОЛНЫЙ ОТВЕТ API МОДЕЛЕЙ ===")
+        logger.info(f"Общее количество моделей: {len(models)}")
+
+        for i, model in enumerate(models):
+            logger.info(f"--- Модель {i + 1} ---")
+            logger.info(f"ID: {model.get('id')}")
+            logger.info(f"Label: {model.get('label')}")
+            logger.info(f"Name: {model.get('name')}")
+            logger.info(f"Features: {model.get('features')}")
+            logger.info(f"Is_allowed: {model.get('is_allowed')}")
+            logger.info(f"Is_default: {model.get('is_default')}")
+            logger.info(f"Parent_id: {model.get('parent_id')}")
+            logger.info(f"Все поля: {model}")
+            logger.info("---")
+
         # Фильтруем текстовые модели
         text_models = [
             model for model in models
             if "TEXT_TO_TEXT" in model.get("features", [])
         ]
+
+        logger.info(f"=== ТЕКСТОВЫЕ МОДЕЛИ ПОСЛЕ ФИЛЬТРАЦИИ ===")
+        logger.info(f"Количество текстовых моделей: {len(text_models)}")
+        for model in text_models:
+            logger.info(
+                f"Текстовая модель: ID={model.get('id')}, Label={model.get('label')}, Allowed={model.get('is_allowed')}")
 
         if not text_models:
             await message.answer(
@@ -86,7 +105,6 @@ async def show_model_selection(message, user_repository, chat_repository):
                 logger.info(f"Установлена модель по умолчанию {default_model.get('id')} для пользователя {user.id}")
 
         # Отправляем клавиатуру выбора модели
-
         keyboard = KeyboardFactory.create_model_selection(text_models, chat.bothub_chat_model)
 
         await message.answer(
