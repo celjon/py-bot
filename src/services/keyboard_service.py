@@ -1,7 +1,6 @@
 # src/services/keyboard_service.py
 import logging
 from typing import Dict, List, Optional, Any
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from src.domain.entity.user import User
 from src.domain.service.language_service import LanguageService
@@ -28,16 +27,16 @@ class KeyboardService:
         """
         self.is_web_search = enabled
 
-    def get_main_keyboard(self, lang: LanguageService, user: Optional[User] = None) -> ReplyKeyboardMarkup:
+    def get_main_keyboard(self, lang: LanguageService, user: Optional[User] = None) -> Dict[str, Any]:
         """
-        Получить основную клавиатуру бота
+        Получить основную клавиатуру бота в виде JSON-совместимого словаря
 
         Args:
             lang: Сервис локализации
             user: Пользователь (опционально)
 
         Returns:
-            ReplyKeyboardMarkup: Клавиатура
+            Dict[str, Any]: Словарь клавиатуры для Telegram API
         """
         # Получаем текущий индекс чата
         current_chat_index = user.current_chat_index if user else 1
@@ -46,22 +45,22 @@ class KeyboardService:
         chat_buttons = []
         for emoji, index in self.CHAT_BUTTONS.items():
             if index == current_chat_index:
-                chat_buttons.append(KeyboardButton(text=f"{emoji}✅"))
+                chat_buttons.append({"text": f"{emoji}✅"})
             else:
-                chat_buttons.append(KeyboardButton(text=emoji))
+                chat_buttons.append({"text": emoji})
 
-        # Создаем основную клавиатуру
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
+        # Создаем основную клавиатуру как словарь
+        keyboard = {
+            "keyboard": [
                 chat_buttons,
-                [KeyboardButton(text="🔄 Новый чат"), KeyboardButton(text="⚙️ Сменить модель")],
-                [KeyboardButton(text="🔗 Привязать аккаунт")]
+                [{"text": "🔄 Новый чат"}, {"text": "⚙️ Сменить модель"}],
+                [{"text": "🔗 Привязать аккаунт"}]
             ],
-            resize_keyboard=True
-        )
+            "resize_keyboard": True
+        }
 
         # Если включен веб-поиск, добавляем кнопку
         if self.is_web_search:
-            keyboard.keyboard.append([KeyboardButton(text="🔍 Поиск")])
+            keyboard["keyboard"].append([{"text": "🔍 Поиск"}])
 
         return keyboard

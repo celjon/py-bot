@@ -14,6 +14,8 @@ from src.adapter.repository.present_repository import PresentRepository
 from src.lib.clients.telegram_client import TelegramClient
 from src.domain.service.language_service import LanguageService
 from src.services.keyboard_service import KeyboardService
+from src.lib.bot_instance import get_bot_instance
+from src.domain.entity.present import Present
 
 # Настройка логирования
 logging.basicConfig(
@@ -66,6 +68,20 @@ async def bothub_webhook(
                 content={"error": "Incorrect Bothub webhook data: missing type"}
             )
 
+        # Проверяем, предназначен ли запрос для Python-бота
+        # Для обратной совместимости принимаем как флаг pythonBot: true, так и запросы без этого флага
+        is_python_bot = data.get("pythonBot", False)
+
+        # Для запросов типа "merge" всегда проверяем флаг pythonBot
+        if data["type"] == "merge" and not is_python_bot:
+            logger.info(f"Получен запрос merge без флага pythonBot, возможно это запрос для PHP-бота")
+            # Если у вас есть специальная обработка для PHP-бота, можно добавить здесь
+            # Либо просто игнорировать такие запросы
+            return JSONResponse(
+                status_code=200,
+                content={"status": "ignored", "message": "This merge request is not intended for Python bot"}
+            )
+
         # Обработка разных типов вебхуков
         webhook_type = data["type"]
 
@@ -105,7 +121,7 @@ async def bothub_webhook(
 
 
 async def handle_merge_webhook(data: Dict[str, Any], user_repository: UserRepository):
-    """Обработка слияния аккаунтов (аналог PHP merge)"""
+    """Обработка слияния аккаунтов"""
     # Проверяем обязательные поля
     required_fields = ["oldId", "newId", "email"]
     missing_fields = [field for field in required_fields if field not in data]
@@ -120,13 +136,39 @@ async def handle_merge_webhook(data: Dict[str, Any], user_repository: UserReposi
     new_id = data["newId"]
     email = data["email"]
 
-    logger.info(f"Merge: {old_id} -> {new_id} ({email})")
+    # Флаг, указывающий что запрос для Python-бота
+    is_python_bot = data.get("pythonBot", False)
+
+    logger.info(f"Merge: {old_id} -> {new_id} ({email}), Python bot: {is_python_bot}")
+
+    # Расширенное логирование для отладки
+    try:
+        all_users = await user_repository.get_all(limit=10, offset=0)
+        logger.info(f"Все пользователи в БД: {[(u.id, u.bothub_id) for u in all_users]}")
+        logger.info(f"Ищем пользователя с bothub_id={old_id}")
+    except Exception as e:
+        logger.warning(f"Не удалось получить список пользователей: {e}")
 
     # Находим пользователя
-    user = await user_repository.find_by_bothub_id(old_id)
+    user = None
+    try:
+        # Сначала ищем по bothub_id
+        user = await user_repository.find_by_bothub_id(old_id)
+
+        if not user and is_python_bot:
+            # Если это запрос для Python-бота и пользователь не найден по старому ID,
+            # пробуем найти по TG ID (т.к. oldId может быть TG ID, а не bothub_id)
+            logger.info(f"Пользователь не найден по bothub_id, пробуем найти по tg_id: {old_id}")
+            user = await user_repository.find_by_tg_id(old_id)
+    except Exception as e:
+        logger.error(f"Ошибка при поиске пользователя: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Ошибка поиска пользователя: {str(e)}"}
+        )
 
     if not user:
-        logger.error(f"Пользователь с bothub_id={old_id} не найден")
+        logger.error(f"Пользователь с id={old_id} не найден (ни как bothub_id, ни как tg_id)")
         return JSONResponse(
             status_code=404,
             content={"error": "Пользователь не найден"}
@@ -138,25 +180,44 @@ async def handle_merge_webhook(data: Dict[str, Any], user_repository: UserReposi
     user.bothub_access_token = None  # Сбрасываем токен
     user.state = None  # Сбрасываем состояние
 
-    await user_repository.update(user)
+    try:
+        # Сохраняем изменения
+        await user_repository.update(user)
+        logger.info(f"Данные пользователя {user.id} успешно обновлены, новый bothub_id: {new_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении данных пользователя: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Ошибка обновления данных: {str(e)}"}
+        )
 
-    # Отправляем уведомление пользователю
-    language_service = LanguageService(user.language_code or "en")
-    content = language_service.get_string("accounts_merged", [user.email])
+    try:
+        # Отправляем уведомление пользователю
+        language_service = LanguageService(user.language_code or "en")
+        content = language_service.get_string("accounts_merged", [user.email])
 
-    # Получаем клавиатуру
-    keyboard = keyboard_service.get_main_keyboard(language_service, user)
+        # Создаем словарь клавиатуры
+        keyboard_buttons = [
+            [{"text": "🔄 Новый чат"}, {"text": "⚙️ Сменить модель"}],
+            [{"text": "🔗 Привязать аккаунт"}]
+        ]
+        keyboard = {"keyboard": keyboard_buttons, "resize_keyboard": True}
 
-    # Отправляем сообщение
-    await tg_client.send_message(
-        chat_id=user.tg_id,
-        text=content,
-        reply_markup=keyboard
-    )
+        # Отправляем сообщение
+        await tg_client.send_message(
+            chat_id=user.tg_id,
+            text=content,
+            reply_markup=keyboard
+        )
 
-    logger.info(f"Аккаунт {user.id} успешно привязан к {email}")
+        logger.info(f"Аккаунт {user.id} успешно привязан к {email}, уведомление отправлено")
 
-    return {"status": "success", "message": "Account connected"}
+        return {"status": "success", "message": "Account connected"}
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомления: {e}", exc_info=True)
+        # Возвращаем успех даже если не удалось отправить уведомление,
+        # так как важнее сохранить изменения в БД
+        return {"status": "success", "message": "Account connected, notification failed"}
 
 
 async def handle_present_webhook(
@@ -291,19 +352,15 @@ async def handle_message_webhook(data: Dict[str, Any], user_repository: UserRepo
             content={"error": "Incorrect Bothub webhook data: missing required fields"}
         )
 
-    # TODO: Реализовать обработку сообщений
-    # Не реализуем полностью, так как это потребует получения связанного сообщения
-    # и значительного переписывания логики бота
-
-    logger.warning("Обработка сообщений от BotHub пока не реализована")
+    # В полной версии здесь была бы обработка сообщений от BotHub
+    # Но мы пока что просто логируем данные
+    logger.info(f"Получено сообщение от BotHub: {data['message']['additional_content']['content']}")
 
     return {"status": "success", "message": "Message received"}
 
 
 async def add_present(user, tokens, present_repository):
     """Добавить подарок пользователю"""
-    from src.domain.entity.present import Present
-
     present = Present(
         user_id=user.id,
         tokens=tokens,

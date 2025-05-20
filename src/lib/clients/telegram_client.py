@@ -1,6 +1,7 @@
 # src/lib/clients/telegram_client.py
 import logging
 import aiohttp
+import json
 from typing import Dict, Any, Optional, Union, List
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class TelegramClient:
             chat_id: Union[int, str],
             text: str,
             parse_mode: str = "Markdown",
-            reply_markup: Optional[Dict[str, Any]] = None,
+            reply_markup: Optional[Any] = None,
             disable_web_page_preview: bool = False
     ) -> Dict[str, Any]:
         """
@@ -49,9 +50,20 @@ class TelegramClient:
             "disable_web_page_preview": disable_web_page_preview
         }
 
+        # Преобразуем клавиатуру в словарь, если она объект aiogram
         if reply_markup:
-            # Преобразуем клавиатуру в JSON
-            data["reply_markup"] = reply_markup
+            if hasattr(reply_markup, "model_dump"):
+                # Для Pydantic моделей (aiogram >= 3.x)
+                data["reply_markup"] = reply_markup.model_dump()
+            elif hasattr(reply_markup, "to_json"):
+                # Для aiogram 2.x
+                data["reply_markup"] = json.loads(reply_markup.to_json())
+            elif hasattr(reply_markup, "to_dict"):
+                # Альтернативный метод
+                data["reply_markup"] = reply_markup.to_dict()
+            else:
+                # Если это уже словарь
+                data["reply_markup"] = reply_markup
 
         return await self._make_request("sendMessage", data)
 
@@ -86,7 +98,19 @@ class TelegramClient:
             data["caption"] = caption
 
         if reply_markup:
-            data["reply_markup"] = reply_markup
+            # Преобразуем клавиатуру в словарь, если она объект aiogram
+            if hasattr(reply_markup, "model_dump"):
+                # Для Pydantic моделей (aiogram >= 3.x)
+                data["reply_markup"] = reply_markup.model_dump()
+            elif hasattr(reply_markup, "to_json"):
+                # Для aiogram 2.x
+                data["reply_markup"] = json.loads(reply_markup.to_json())
+            elif hasattr(reply_markup, "to_dict"):
+                # Альтернативный метод
+                data["reply_markup"] = reply_markup.to_dict()
+            else:
+                # Если это уже словарь
+                data["reply_markup"] = reply_markup
 
         return await self._make_request("sendPhoto", data)
 
