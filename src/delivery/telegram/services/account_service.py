@@ -35,6 +35,13 @@ class AccountService:
 
             # Генерируем ссылку
             link = await account_connection_usecase.generate_connection_link(user)
+
+            # ВАЖНО: После генерации ссылки нужно сохранить обновленного пользователя
+            from src.adapter.repository.user_repository import UserRepository
+            user_repo = UserRepository()
+            await user_repo.update(user)
+            logger.info(f"Пользователь {user.id} обновлен с новым bothub_id: {user.bothub_id}")
+
             return True, link
 
         except Exception as e:

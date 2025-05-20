@@ -360,7 +360,43 @@ class BothubGateway:
         """
         access_token = await self.get_access_token(user)
         response = await self.client.generate_telegram_connection_token(access_token)
-        token = response.get("telegramConnectionToken", "")
+
+        # Из ответа получаем токен
+        if "telegramConnectionToken" in response:
+            token = response["telegramConnectionToken"]
+        elif "data" in response and "telegramConnectionToken" in response["data"]:
+            token = response["data"]["telegramConnectionToken"]
+        else:
+            token = ""
+
+        # Логируем токен для отладки
+        logger.info(f"Получен токен подключения: {token[:30]}...")
+
+        # Пробуем извлечь ID из токена JWT
+        if token:
+            try:
+                # Разбиваем JWT токен на части
+                parts = token.split('.')
+                if len(parts) >= 2:
+                    # Декодируем тело токена (вторая часть)
+                    import base64
+                    import json
+
+                    # Правильное декодирование base64
+                    padding = '=' * (4 - len(parts[1]) % 4)
+                    decoded = base64.b64decode(parts[1] + padding)
+                    payload = json.loads(decoded)
+
+                    # Извлекаем ID из токена
+                    if "id" in payload:
+                        bothub_id = payload["id"]
+                        logger.info(f"Извлечен bothub_id из токена: {bothub_id}")
+
+                        # Обновляем bothub_id пользователя
+                        user.bothub_id = bothub_id
+                        logger.info(f"Обновлен bothub_id пользователя {user.id}: {bothub_id}")
+            except Exception as e:
+                logger.error(f"Ошибка при извлечении ID из токена: {e}")
 
         web_url = settings.BOTHUB_WEB_URL
         return f"{web_url}?telegram-connection-token={token}"
