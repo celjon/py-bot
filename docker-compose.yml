@@ -1,5 +1,37 @@
-version: '3'
+# docker-compose-simple.yml (упрощенная версия)
+version: '3.8'
+
 services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:17
+    container_name: bothub-postgres
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123}
+      POSTGRES_DB: ${POSTGRES_DB:-dev}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/pgdata
+    networks:
+      - bothub-network
+
+  # Redis для очередей и кэша
+  redis:
+    image: redis:7.2
+    container_name: bothub-redis
+    restart: always
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - bothub-network
+
+  # Telegram Bot API Server
   telegram-bot-api:
     build:
       context: .
@@ -8,14 +40,21 @@ services:
     env_file:
       - .env
     volumes:
-      - telegram-data:/telegram-bot-api-data
+      - telegram_data:/telegram-bot-api-data
     ports:
       - "8081:8081"
     command: >
-      /app/telegram-bot-api/bin/telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --http-ip-address=0.0.0.0 --dir=/telegram-bot-api-data --verbosity=5 --local
+      /app/telegram-bot-api/bin/telegram-bot-api 
+      --api-id=${API_ID} 
+      --api-hash=${API_HASH} 
+      --http-ip-address=0.0.0.0 
+      --dir=/telegram-bot-api-data 
+      --verbosity=5 
+      --local
     networks:
-      - bot-network
+      - bothub-network
 
+  # Python Telegram Bot
   telegram-bot:
     build:
       context: .
@@ -24,17 +63,23 @@ services:
     env_file:
       - .env
     depends_on:
-      - telegram-bot-api
+      - postgres
+      - redis
     environment:
-      - TELEGRAM_API_URL=http://telegram-bot-api:8081
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-123}@postgres:5432/${POSTGRES_DB:-dev}
+      - REDIS_URL=redis://redis:6379
     ports:
       - "8001:8001"
+    volumes:
+      - ./logs:/app/logs
     networks:
-      - bot-network
-
-networks:
-  bot-network:
-    driver: bridge
+      - bothub-network
 
 volumes:
-  telegram-data:
+  postgres_data:
+  redis_data:
+  telegram_data:
+
+networks:
+  bothub-network:
+    driver: bridge

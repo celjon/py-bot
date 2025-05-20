@@ -352,6 +352,20 @@ class BothubClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         return await self._make_request("v2/referral", "POST", headers, {"templateId": template_id})
 
+    async def update_parent_model(self, access_token: str, chat_id: str, parent_model_id: str) -> Dict[str, Any]:
+        """Обновление родительской модели чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"parentModelId": parent_model_id}
+
+        return await self._make_request(f"v2/chat/{chat_id}/parent-model", "PATCH", headers, data)
+
+    async def save_model(self, access_token: str, chat_id: str, model_id: str) -> Dict[str, Any]:
+        """Сохранение модели для чата"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        data = {"model": model_id}
+
+        return await self._make_request(f"v2/chat/{chat_id}/settings", "PATCH", headers, data)
+
     async def whisper(self, access_token: str, file_path: str, method: str = "transcriptions") -> str:
         """
         Транскрибирование голосового сообщения через BotHub API

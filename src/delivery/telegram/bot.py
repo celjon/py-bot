@@ -4,7 +4,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.client.default import DefaultBotProperties
 from src.config.settings import Settings
-from src.config.database import get_db_path
 from src.delivery.telegram.handlers import setup_handlers
 from src.domain.service.intent_detection import IntentDetectionService
 from src.domain.usecase.chat_session import ChatSessionUseCase
@@ -38,14 +37,12 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     # Инициализация адаптеров
     bothub_gateway = BothubGateway(bothub_client)
 
-    # Используем переданные репозитории или создаем пустые заглушки
+    # Используем переданные репозитории или создаем новые
     if user_repository is None:
-        DB_PATH = get_db_path()  # Используем единый путь
-        user_repository = UserRepository(DB_PATH)
+        user_repository = UserRepository()
 
     if chat_repository is None:
-        DB_PATH = get_db_path()  # Используем единый путь
-        chat_repository = ChatRepository(DB_PATH)
+        chat_repository = ChatRepository()
 
     # Инициализация сервисов
     intent_detection_service = IntentDetectionService()

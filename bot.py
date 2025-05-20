@@ -1,13 +1,10 @@
-
+# bot.py
 import asyncio
 import logging
-import os
 from src.config.settings import get_settings
-from src.config.database import get_db_path
 from src.delivery.telegram.bot import create_bot
 from src.adapter.repository.user_repository import UserRepository
 from src.adapter.repository.chat_repository import ChatRepository
-from src.lib.bot_instance import set_bot_instance
 
 # Настройка логирования
 logging.basicConfig(
@@ -16,26 +13,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Используем единый путь к БД
-DB_PATH = get_db_path()
-
-async def init_db():
-    """Инициализация базы данных"""
-    logger.info(f"Initializing database at {DB_PATH}")
-
-    # Инициализация репозиториев
-    user_repository = UserRepository(DB_PATH)
-    chat_repository = ChatRepository(DB_PATH)
-
-    # Создание таблиц
-    await user_repository.init_db()
-    await chat_repository.init_db()
-
-    logger.info("Database initialized successfully")
-
-    return user_repository, chat_repository
-
-
 async def main():
     """Основная функция для запуска бота в режиме long polling"""
     logger.info("Starting bot in long polling mode...")
@@ -43,10 +20,11 @@ async def main():
     # Получаем настройки
     settings = get_settings()
 
-    # Инициализируем базу данных
-    user_repository, chat_repository = await init_db()
+    # Инициализируем репозитории
+    user_repository = UserRepository()
+    chat_repository = ChatRepository()
 
-    # Создаём бота и диспетчер с использованием реальных репозиториев
+    # Создаём бота и диспетчер с использованием репозиториев
     bot, dp = create_bot(settings, user_repository, chat_repository)
 
     # Логируем для отладки
@@ -55,7 +33,6 @@ async def main():
 
     # Запускаем polling
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     try:

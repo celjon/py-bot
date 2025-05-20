@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 async def get_user_from_telegram_user(telegram_user: TelegramUser, user_repository):
     """Универсальная функция для получения/создания пользователя из TelegramUser"""
     telegram_id = str(telegram_user.id)
-    user = await user_repository.find_by_telegram_id(telegram_id)
+    user = await user_repository.find_by_tg_id(telegram_id)
 
     if not user:
         user = User(
             id=0,  # Временный ID, будет заменён после сохранения
-            telegram_id=telegram_id,
+            tg_id=telegram_id,
             first_name=telegram_user.first_name,
             last_name=telegram_user.last_name,
             username=telegram_user.username,

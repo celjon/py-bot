@@ -1,9 +1,7 @@
 import asyncio
-import os
 import logging
-from src.config.database import get_db_path  # Добавим импорт
-from src.adapter.repository.user_repository import UserRepository
-from src.adapter.repository.chat_repository import ChatRepository
+from src.db.migrations import DatabaseMigration
+from src.config.settings import get_settings
 
 # Настройка логирования
 logging.basicConfig(
@@ -12,22 +10,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Используем единый путь к БД
-DB_PATH = get_db_path()
 
-async def init_db():
-    """Инициализация базы данных"""
-    logger.info(f"Initializing database at {DB_PATH}")
+async def init_database():
+    """Инициализация базы данных PostgreSQL"""
+    logger.info("Запуск инициализации базы данных...")
 
-    # Инициализация репозиториев
-    user_repository = UserRepository(DB_PATH)
-    chat_repository = ChatRepository(DB_PATH)
+    # Проверяем настройки
+    settings = get_settings()
+    logger.info(f"Подключение к базе данных: {settings.DATABASE_URL}")
 
-    # Создание таблиц
-    await user_repository.init_db()
-    await chat_repository.init_db()
+    # Запускаем миграции
+    migration = DatabaseMigration()
+    await migration.run_migrations()
 
-    logger.info("Database initialized successfully")
+    logger.info("Инициализация базы данных завершена")
+
+
+async def rollback_database():
+    """Откат базы данных (удаление всех таблиц)"""
+    logger.warning("Запуск отката базы данных...")
+
+    # Запускаем откат миграций
+    migration = DatabaseMigration()
+    await migration.rollback_migrations()
+
+    logger.warning("Откат базы данных завершен")
+
 
 if __name__ == "__main__":
-    asyncio.run(init_db())
+    import sys
+
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "rollback":
+            asyncio.run(rollback_database())
+        elif sys.argv[1] == "init":
+            asyncio.run(init_database())
+        else:
+            print("Использование: python init_db.py [init|rollback]")
+            print("  init     - создать/обновить таблицы базы данных")
+            print("  rollback - удалить все таблицы базы данных")
+    else:
+        # По умолчанию выполняем инициализацию
+        asyncio.run(init_database())
