@@ -1,11 +1,13 @@
+
 import asyncio
 import logging
 import os
 from src.config.settings import get_settings
-from src.config.database import get_db_path  # Добавим импорт
+from src.config.database import get_db_path
 from src.delivery.telegram.bot import create_bot
 from src.adapter.repository.user_repository import UserRepository
 from src.adapter.repository.chat_repository import ChatRepository
+from src.lib.bot_instance import set_bot_instance
 
 # Настройка логирования
 logging.basicConfig(

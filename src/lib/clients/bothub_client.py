@@ -161,10 +161,42 @@ class BothubClient:
             return []
 
     async def generate_telegram_connection_token(self, access_token: str) -> Dict[str, Any]:
-        """Генерация токена подключения Telegram к аккаунту"""
+        """Генерация токена подключения Telegram к аккаунту для Python-бота"""
         headers = {"Authorization": f"Bearer {access_token}"}
         try:
-            return await self._make_request("v2/auth/telegram-connection-token", "GET", headers)
+            # Используем правильный эндпоинт для Python-бота
+            response = await self._make_request("v2/auth/telegram-connection-token-python", "GET", headers)
+
+            # Логируем полный ответ для отладки
+            logger.info(f"Ответ сервера на запрос токена подключения: {response}")
+
+            # Проверяем различные возможные форматы ответа
+            if "telegramConnectionToken" in response:
+                token = response["telegramConnectionToken"]
+                logger.info(f"Найден токен в поле 'telegramConnectionToken': {token[:50] if token else 'ПУСТОЙ'}...")
+                return response
+            elif "token" in response:
+                # Возможно токен в поле 'token'
+                token = response["token"]
+                logger.info(f"Найден токен в поле 'token': {token[:50] if token else 'ПУСТОЙ'}...")
+                # Нормализуем ответ
+                return {"telegramConnectionToken": token}
+            elif "data" in response and isinstance(response["data"], dict):
+                # Возможно токен в поле data
+                data = response["data"]
+                if "telegramConnectionToken" in data:
+                    token = data["telegramConnectionToken"]
+                    logger.info(f"Найден токен в data.telegramConnectionToken: {token[:50] if token else 'ПУСТОЙ'}...")
+                    return {"telegramConnectionToken": token}
+                elif "token" in data:
+                    token = data["token"]
+                    logger.info(f"Найден токен в data.token: {token[:50] if token else 'ПУСТОЙ'}...")
+                    return {"telegramConnectionToken": token}
+
+            # Если токен не найден, логируем проблему
+            logger.error(f"Токен подключения не найден в ответе сервера: {response}")
+
+            return response
         except Exception as e:
             logger.error(f"Ошибка при генерации токена подключения: {str(e)}")
             raise Exception(f"Не удалось создать токен подключения: {str(e)}")

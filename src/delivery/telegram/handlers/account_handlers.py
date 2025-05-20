@@ -52,6 +52,7 @@ def register_account_handlers(router: Router, account_connection_usecase, user_r
     async def handle_link_account_command(message: Message):
         """Обработка команды /link_account для привязки аккаунта"""
         try:
+            logger.info(f"Пользователь {message.from_user.id} использовал команду /link_account")
             await handle_link_account_logic(message, user_repository, chat_repository, account_connection_usecase)
         except Exception as e:
             logger.error(f"Ошибка при обработке команды link_account: {e}", exc_info=True)

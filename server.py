@@ -8,8 +8,10 @@ import json
 from datetime import datetime
 
 from src.config.settings import get_settings, Settings
-from src.config.database import get_db_path  # Добавим импорт
+from src.config.database import get_db_path
 from src.adapter.repository.user_repository import UserRepository
+from src.lib.bot_instance import get_bot_instance, is_bot_available
+from src.delivery.telegram.services.notification_service import NotificationService
 
 # Настройка логирования
 logging.basicConfig(
@@ -24,6 +26,7 @@ DB_PATH = get_db_path()
 app = FastAPI(title="BotHub WebHook Server",
               description="API для обработки вебхуков от BotHub",
               version="1.0.0")
+
 
 async def get_user_repository():
     """Получение репозитория пользователей"""
@@ -44,9 +47,6 @@ async def bothub_webhook(
 
         # Проверяем секретный ключ
         bot_secret_key = request.headers.get("botsecretkey")
-        logger.info(f"Secret key from header: {bot_secret_key}")
-        logger.info(f"Expected secret key: {settings.BOTHUB_SECRET_KEY}")
-
         if not bot_secret_key or bot_secret_key != settings.BOTHUB_SECRET_KEY:
             logger.error(f"Неверный секретный ключ вебхука: {bot_secret_key}")
             return JSONResponse(
@@ -76,84 +76,90 @@ async def bothub_webhook(
                 content={"error": f"Некорректные данные вебхука: {str(e)}"}
             )
 
-        # Проверяем тип вебхука
-        if not data.get("type"):
-            logger.error(f"Отсутствует тип вебхука: {data}")
+        # Проверяем тип вебхука - ожидаем только "merge"
+        if data.get("type") != "merge":
+            logger.error(f"Неожиданный тип вебхука: {data.get('type')}")
             return JSONResponse(
                 status_code=400,
-                content={"error": "Некорректные данные вебхука (отсутствует тип)"}
+                content={"error": f"Неподдерживаемый тип вебхука: {data.get('type')}"}
             )
 
-        logger.info(f"Получен вебхук типа: {data['type']}")
+        # Проверяем обязательные поля
+        required_fields = ["oldId", "newId", "email"]
+        missing_fields = [field for field in required_fields if field not in data]
 
-        # Обрабатываем разные типы вебхуков
-        if data["type"] == "merge":
-            # Проверяем, что это вебхук для Python-бота
-            if not data.get("pythonBot"):
-                logger.info("Получен вебхук merge для PHP-бота, игнорируем")
-                return {"status": "ignored - php bot"}
+        if missing_fields:
+            logger.error(f"Отсутствуют обязательные поля: {missing_fields}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Отсутствуют поля: {missing_fields}"}
+            )
 
-            logger.info("Обрабатываем merge для Python-бота")
+        old_user_id = data["oldId"]  # ID Telegram пользователя (удаляется)
+        new_user_id = data["newId"]  # ID основного пользователя (остается)
+        email = data["email"]
+        is_python_bot = data.get("pythonBot", False)
 
-            # Обработка привязки аккаунта
-            if not data.get("oldId") or not data.get("newId") or "email" not in data:
-                logger.error(f"Некорректные данные для типа 'merge': {data}")
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "Некорректные данные вебхука для типа 'merge'"}
-                )
+        logger.info(
+            f"Обрабатываем merge: oldId={old_user_id}, newId={new_user_id}, email={email}, pythonBot={is_python_bot}")
 
-            # Находим пользователя по старому ID
-            user = await user_repository.find_by_bothub_id(data["oldId"])
-            if not user:
-                logger.error(f"Пользователь с bothub_id={data['oldId']} не найден")
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": "Пользователь не найден"}
-                )
+        # Находим пользователя Telegram-бота по старому ID
+        telegram_user = await user_repository.find_by_bothub_id(old_user_id)
 
-            logger.info(f"Найден пользователь {user.id} для merge")
+        if not telegram_user:
+            logger.error(f"Telegram пользователь с bothub_id={old_user_id} не найден")
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Telegram пользователь не найден"}
+            )
 
-            # Обновляем данные пользователя
-            user.bothub_id = data["newId"]
-            user.email = data["email"]
-            user.bothub_access_token = None
-            user.state = None
+        logger.info(f"Найден Telegram пользователь {telegram_user.id} (TG: {telegram_user.telegram_id})")
 
-            # Сохраняем изменения
-            await user_repository.update(user)
+        # Обновляем данные Telegram пользователя после merge
+        telegram_user.bothub_id = new_user_id  # Новый ID от основного аккаунта
+        telegram_user.email = email  # Email от основного аккаунта
+        telegram_user.bothub_access_token = None  # Сбрасываем токен для получения нового
 
-            logger.info(f"Аккаунт пользователя {user.id} успешно привязан к аккаунту {data['email']}")
+        # Сохраняем изменения
+        await user_repository.update(telegram_user)
 
-            # Отправляем уведомление пользователю (если возможно)
-            # TODO: Добавить отправку уведомления через бота
+        logger.info(
+            f"Merge завершен: telegram_user.id={telegram_user.id} получил bothub_id={new_user_id}, email={email}")
 
-            return {"status": "success"}
+        # Отправляем уведомление пользователю о успешной привязке
+        if is_bot_available():
+            bot = get_bot_instance()
+            notification_service = NotificationService(bot)
 
-        # Другие типы вебхуков
+            # Определяем тип подключения для уведомления
+            connection_type = "python_bot" if is_python_bot else "regular_bot"
+
+            await notification_service.send_account_connection_success(
+                telegram_user,
+                email,
+                connection_type
+            )
         else:
-            logger.warning(f"Неизвестный тип вебхука: {data['type']}")
-            return {"status": "unknown_type"}
+            logger.warning("Бот недоступен для отправки уведомления")
+
+        return {
+            "status": "success",
+            "message": "Account successfully connected",
+            "pythonBot": is_python_bot
+        }
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке вебхука BotHub: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка при обработке вебхука: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": f"Внутренняя ошибка сервера: {str(e)}"}
         )
 
 
-# Добавим эндпоинт для проверки работы ngrok
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
-
-
-@app.get("/test-webhook")
-async def test_webhook():
-    """Тестовый эндпоинт для проверки доступности"""
-    return {"message": "Webhook server is running", "timestamp": datetime.now().isoformat()}
 
 
 if __name__ == "__main__":

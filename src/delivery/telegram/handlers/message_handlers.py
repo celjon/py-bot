@@ -79,6 +79,8 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             # Переиспользуем логику из account_handlers
             from .account_handlers import handle_link_account_logic
             await handle_link_account_logic(message, user_repository, chat_repository, account_connection_usecase)
+
+            logger.info(f"Пользователь {message.from_user.id} использовал кнопку привязки аккаунта")
         except Exception as e:
             logger.error(f"Ошибка при обработке кнопки привязки аккаунта: {e}", exc_info=True)
             await message.answer(
