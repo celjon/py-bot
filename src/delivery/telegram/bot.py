@@ -8,6 +8,7 @@ from src.delivery.telegram.handlers import setup_handlers
 from src.domain.service.intent_detection import IntentDetectionService
 from src.domain.usecase.chat_session import ChatSessionUseCase
 from src.domain.usecase.account_connection import AccountConnectionUseCase
+from src.domain.usecase.image_generation import ImageGenerationUseCase
 from src.lib.clients.bothub_client import BothubClient
 from src.adapter.gateway.bothub_gateway import BothubGateway
 from src.adapter.repository.user_repository import UserRepository
@@ -50,6 +51,7 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
     # Инициализация юзкейсов
     chat_session_usecase = ChatSessionUseCase(bothub_gateway)
     account_connection_usecase = AccountConnectionUseCase(bothub_gateway, settings)
+    image_generation_usecase = ImageGenerationUseCase(bothub_gateway)
 
     # Настройка обработчиков
     try:
@@ -61,6 +63,7 @@ def create_bot(settings: Settings, user_repository=None, chat_repository=None) -
             chat_repository=chat_repository,
             settings=settings
         )
+
         logger.info(f"Created handler router: {handlers_router}")
         dp.include_router(handlers_router)
         logger.info("Successfully included router in dispatcher")

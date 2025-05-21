@@ -1,91 +1,123 @@
+# src/delivery/telegram/handlers/message_handlers.py
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums.chat_action import ChatAction
 import logging
 import time
 import os
-import tempfile
+import asyncio
+import aiohttp
 from typing import List, Dict, Any, Optional, Tuple
 
 from src.config.settings import Settings
 from ..keyboards.main_keyboard import get_main_keyboard
-from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file, \
-    get_user_from_telegram_user
-from ..services.model_service import show_model_selection
+from .base_handlers import get_or_create_user, get_or_create_chat, send_long_message, download_telegram_file
+from src.domain.service.intent_detection import IntentType
 
 logger = logging.getLogger(__name__)
 
 
-def register_message_handlers(router: Router, chat_session_usecase, intent_detection_service,
-                              user_repository, chat_repository, settings, account_connection_usecase):
+def register_message_handlers(router: Router, chat_session_usecase, image_generation_usecase, intent_detection_service,
+                              user_repository,
+                              chat_repository, settings):
     """Регистрация обработчиков текстовых сообщений"""
 
-    @router.message(F.text.startswith("🔄 Новый чат"))
-    async def handle_new_chat_button(message: Message):
-        """Обработка нажатия на кнопку 'Новый чат'"""
+    async def process_image_generation(message: Message, user, chat, prompt):
+        """Обработка запроса на генерацию изображения"""
+        bot = message.bot
+
+        # Отправляем сообщение о генерации
+        processing_msg = await message.answer(
+            "🎨 Генерирую изображение...",
+            parse_mode="Markdown"
+        )
+
         try:
-            user = await get_or_create_user(message, user_repository)
-            chat = await get_or_create_chat(user, chat_repository)
+            # Отправляем статус "uploading_photo"
+            await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
 
-            # Сбрасываем счетчик контекста
-            chat.reset_context_counter()
-            await chat_repository.update(chat)
+            # Генерируем изображение без видимого переключения чата
+            result, model_used = await image_generation_usecase.generate_image_without_switching_chat(user, chat,
+                                                                                                      prompt)
 
-            # Показываем "печатает"
-            await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+            # Удаляем сообщение о генерации
+            try:
+                await bot.delete_message(message.chat.id, processing_msg.message_id)
+            except Exception as e:
+                logger.error(f"Ошибка при удалении сообщения о генерации: {e}")
 
-            # Создаем новый чат в BotHub API
-            await chat_session_usecase.create_new_chat(user, chat)
+            # Обрабатываем результат
+            if "response" in result and "attachments" in result["response"] and result["response"]["attachments"]:
+                # Находим изображения в ответе
+                images = []
+                for attachment in result["response"]["attachments"]:
+                    if "file" in attachment and attachment["file"].get("type") == "IMAGE":
+                        url = attachment["file"].get("url", "")
+                        if not url and "path" in attachment["file"]:
+                            url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
+                        if url:
+                            images.append(url)
 
-            # Формируем сообщение о новом чате с информацией о модели
-            model_info = f"Начат новый чат с моделью *{chat.bothub_chat_model or 'по умолчанию'}*"
+                # Отправляем изображения пользователю
+                if images:
+                    for url in images:
+                        await message.answer_photo(
+                            url,
+                            caption=f"🎨 Изображение сгенерировано с использованием модели *{model_used}*",
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
 
-            # Добавляем информацию о контексте
-            if chat.context_remember:
-                context_info = "\n\nКонтекст включен. Используйте /reset для сброса контекста."
-            else:
-                context_info = "\n\nКонтекст отключен. Каждое сообщение обрабатывается отдельно."
+                    # Если есть информация о токенах, отправляем её
+                    if "tokens" in result:
+                        await message.answer(
+                            f"`-{result['tokens']} caps`",
+                            parse_mode="Markdown"
+                        )
 
+                    # Обновляем контекст пользователя в сервисе определения намерений
+                    intent_detection_service.update_user_context(str(user.telegram_id),
+                                                                 IntentType.IMAGE_GENERATION,
+                                                                 {"prompt": prompt, "success": True})
+                    return
+
+            # Если не удалось сгенерировать изображение
             await message.answer(
-                f"{model_info}{context_info}",
+                "❌ Не удалось сгенерировать изображение. Пожалуйста, попробуйте другой запрос.",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(user, chat)
             )
 
-            logger.info(f"Создан новый чат для пользователя {user.id} с моделью {chat.bothub_chat_model}")
-
         except Exception as e:
-            logger.error(f"Ошибка при создании нового чата: {str(e)}", exc_info=True)
-            await message.answer(
-                "❌ Произошла ошибка при создании нового чата. Попробуйте еще раз.",
-                parse_mode="Markdown"
-            )
+            logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
 
-    @router.message(F.text.startswith("⚙️ Сменить модель"))
-    async def handle_change_model_button(message: Message):
-        """Обработка нажатия на кнопку 'Сменить модель'"""
+            # Проверяем, содержит ли ошибка код "MODEL_NOT_FOUND"
+            if "MODEL_NOT_FOUND" in str(e):
+                await message.answer(
+                    "❌ Не удалось сгенерировать изображение. В вашем аккаунте нет доступа к моделям генерации изображений. "
+                    "Пожалуйста, проверьте подписку или свяжитесь с поддержкой.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+            else:
+                await message.answer(
+                    "❌ Произошла ошибка при генерации изображения. Пожалуйста, попробуйте позже.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+
+    @router.message(F.text == "🎨 Сменить модель изображений")
+    async def handle_image_model_button(message: Message):
+        """Обработка нажатия на кнопку смены модели генерации изображений"""
         try:
-            await show_model_selection(message, user_repository, chat_repository)
+            # Делегируем обработку команде /image_model
+            # Эта функция будет определена в image_handlers.py
+            from .image_handlers import handle_image_model_command
+            await handle_image_model_command(message)
         except Exception as e:
-            logger.error(f"Ошибка при смене модели: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка при обработке кнопки смены модели изображений: {e}", exc_info=True)
             await message.answer(
-                "❌ Произошла ошибка. Пожалуйста, используйте команду /gpt_config для выбора модели.",
-                parse_mode="Markdown"
-            )
-
-    @router.message(F.text.startswith("🔗 Привязать аккаунт"))
-    async def handle_link_account_button(message: Message):
-        """Обработка нажатия на кнопку 'Привязать аккаунт'"""
-        try:
-            # Переиспользуем логику из account_handlers
-            from .account_handlers import handle_link_account_logic
-            await handle_link_account_logic(message, user_repository, chat_repository, account_connection_usecase)
-
-            logger.info(f"Пользователь {message.from_user.id} использовал кнопку привязки аккаунта")
-        except Exception as e:
-            logger.error(f"Ошибка при обработке кнопки привязки аккаунта: {e}", exc_info=True)
-            await message.answer(
-                "❌ Произошла ошибка при обработке запроса. Попробуйте команду /link_account",
+                "❌ Произошла ошибка. Пожалуйста, попробуйте позже.",
                 parse_mode="Markdown"
             )
 
@@ -93,9 +125,72 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
     async def handle_text_message(message: Message):
         """Обработка текстовых сообщений"""
         try:
+            logger.info(f"Получено сообщение: {message.text} от пользователя {message.from_user.id}")
             # Получаем или создаём пользователя и его текущий чат
             user = await get_or_create_user(message, user_repository)
+            logger.info(f"Получен пользователь: {user.id}, {user.first_name}")
             chat = await get_or_create_chat(user, chat_repository)
+            logger.info(f"Получен чат: {chat.id}, bothub_chat_id: {chat.bothub_chat_id}")
+
+            # Получаем бота из сообщения
+            bot = message.bot
+
+            # Проверяем, находится ли пользователь в каком-то состоянии
+            if user.state == "waiting_for_chat_name":
+                # Это часть логики создания нового чата
+                # Просто отвечаем для демонстрации
+                await message.answer(
+                    "Режим создания чата активен. Этот функционал будет реализован позже.",
+                    parse_mode="Markdown"
+                )
+                user.state = None
+                await user_repository.update(user)
+                return
+
+            # Проверяем, находится ли пользователь в режиме буфера
+            elif user.state == "buffer_mode":
+                # Это часть логики работы с буфером
+                # Просто отвечаем для демонстрации
+                await message.answer(
+                    "Режим буфера активен. Этот функционал будет реализован позже.",
+                    parse_mode="Markdown"
+                )
+                user.state = None
+                await user_repository.update(user)
+                return
+
+            # Проверяем, не является ли сообщение командой клавиатуры
+            elif message.text == "🔄 Новый чат":
+                try:
+                    # Создаем новый чат
+                    await message.answer(
+                        "🔄 Создаю новый чат...",
+                        parse_mode="Markdown"
+                    )
+
+                    # Сбрасываем контекст текущего чата
+                    chat.reset_context_counter()
+                    await chat_repository.update(chat)
+
+                    # Создаем новый чат через usecase
+                    await chat_session_usecase.create_new_chat(user, chat)
+
+                    model_name = chat.bothub_chat_model or "default"
+                    await message.answer(
+                        f"✅ Новый чат создан с моделью *{model_name}*.\n\nТеперь вы можете продолжить общение.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+
+                    logger.info(f"Пользователь {user.id} создал новый чат")
+                except Exception as e:
+                    logger.error(f"Ошибка при создании нового чата: {e}", exc_info=True)
+                    await message.answer(
+                        "❌ Не удалось создать новый чат. Пожалуйста, попробуйте позже.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+                return
 
             # Проверяем, не является ли сообщение кнопкой чата
             chat_emojis = {"1️⃣": 1, "2️⃣": 2, "3️⃣": 3, "4️⃣": 4, "📝": 5}
@@ -113,14 +208,26 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                     )
                     return
 
-            # Сообщаем пользователю, что бот печатает
-            await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-
             # Определяем намерение пользователя (чат, поиск, генерация изображений)
-            intent_type, intent_data = intent_detection_service.detect_intent(message.text, str(user.id))
+            intent_type, intent_data = intent_detection_service.detect_intent(message.text, str(message.from_user.id))
 
             logger.info(f"Пользователь {user.id} отправил сообщение: {message.text}")
             logger.info(f"Определено намерение: {intent_type}")
+
+            # Если это запрос на генерацию изображения
+            if intent_type == IntentType.IMAGE_GENERATION:
+                # Обновляем контекст пользователя
+                intent_detection_service.update_user_context(str(message.from_user.id), intent_type, intent_data)
+
+                # Получаем промпт для генерации изображения
+                image_prompt = intent_data.get("prompt", message.text)
+
+                # Обрабатываем запрос на генерацию изображения
+                await process_image_generation(message, user, chat, image_prompt)
+                return
+
+            # Сообщаем пользователю, что бот печатает
+            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
             # Обрабатываем ссылки в тексте, если включен парсинг ссылок
             text = message.text
@@ -130,49 +237,83 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
                 pass
 
             try:
-                # Обрабатываем разные типы намерений
-                if intent_type.value == "chat":
-                    # Обычное общение с ботом
-                    result = await _handle_chat_intent(chat_session_usecase, user, chat, text)
-                elif intent_type.value == "web_search":
-                    # Поиск в интернете
-                    # В будущем здесь будет веб-поиск
-                    await message.answer(
-                        "🔍 Функция веб-поиска будет реализована позже.",
-                        parse_mode="Markdown",
-                        reply_markup=get_main_keyboard(user, chat)
-                    )
-                    return
-                elif intent_type.value == "image_generation":
-                    # Генерация изображений
-                    # В будущем здесь будет генерация изображений
-                    await message.answer(
-                        "🎨 Функция генерации изображений будет реализована позже.",
-                        parse_mode="Markdown",
-                        reply_markup=get_main_keyboard(user, chat)
-                    )
-                    return
-                else:
-                    # Обычное общение по умолчанию
-                    result = await _handle_chat_intent(chat_session_usecase, user, chat, text)
+                # Отправляем запрос в BotHub API
+                # Проверяем, есть ли у чата ID в BotHub
+                if not chat.bothub_chat_id:
+                    # Создаем новый чат
+                    await chat_session_usecase.create_new_chat(user, chat)
 
-                # Обрабатываем ответ от чата
-                await _process_chat_response(message, result, user, chat, chat_repository)
+                # Отправляем сообщение и получаем ответ
+                result = await chat_session_usecase.send_message(user, chat, text)
+
+                # Если контекст запоминается, увеличиваем счетчик контекста
+                if chat.context_remember:
+                    chat.increment_context_counter()
+                    await chat_repository.update(chat)
+
+                if "response" in result and "content" in result["response"]:
+                    content = result["response"]["content"]
+
+                    # Проверяем наличие формул и конвертируем их в изображения, если включено
+                    if chat.formula_to_image:
+                        # В полной версии здесь будет конвертация формул
+                        # content = await formula_service.format_formulas(content)
+                        pass
+
+                    # Если сообщение слишком длинное, разбиваем его
+                    if len(content) > 4000:
+                        await send_long_message(message, content)
+                    else:
+                        await message.answer(
+                            content,
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+
+                    # Если есть информация о токенах, отправляем её
+                    if "tokens" in result:
+                        tokens_info = f"`-{result['tokens']} caps`"
+
+                        # Добавляем информацию о контексте, если он включен
+                        if chat.context_remember:
+                            tokens_info += f"\n\nПродолжить: /continue\n\nСбросить контекст: /reset"
+
+                        await message.answer(
+                            tokens_info,
+                            parse_mode="Markdown",
+                            reply_markup=get_main_keyboard(user, chat)
+                        )
+
+                    # Если есть вложения (например, изображения), отправляем их
+                    if "attachments" in result["response"] and result["response"]["attachments"]:
+                        for attachment in result["response"]["attachments"]:
+                            if "file" in attachment and attachment["file"].get("type") == "IMAGE":
+                                url = attachment["file"].get("url", "")
+                                if not url and "path" in attachment["file"]:
+                                    url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
+
+                                if url:
+                                    await message.answer_photo(
+                                        url,
+                                        caption=None,
+                                        reply_markup=get_main_keyboard(user, chat)
+                                    )
+
+                # Если количество сообщений в контексте достигло кратного 10 значения,
+                # напоминаем пользователю о возможности сбросить контекст
+                if chat.context_remember and chat.context_counter > 0 and chat.context_counter % 10 == 0:
+                    await message.answer(
+                        "Совет: Если ваш диалог продолжается уже достаточно долго, для учета всего накопленного "
+                        "контекста расходуется больше caps. Чтобы избежать лишних затрат, рекомендуем регулярно "
+                        "начинать новый чат с помощью команды /reset.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
 
             except Exception as api_error:
                 logger.error(f"Ошибка при отправке запроса в BotHub API: {api_error}", exc_info=True)
-
-                # Более дружелюбная обработка ошибок
-                error_message = str(api_error)
-                if "NOT_ENOUGH_TOKENS" in error_message:
-                    error_text = "❌ Недостаточно токенов. Попробуйте /link_account для привязки существующего аккаунта."
-                elif "502 Bad Gateway" in error_message or "временно недоступен" in error_message:
-                    error_text = "❌ Сервер временно недоступен. Попробуйте позже."
-                else:
-                    error_text = f"❌ Произошла ошибка при обработке запроса."
-
                 await message.answer(
-                    error_text,
+                    f"❌ Произошла ошибка при обработке запроса: {str(api_error)}",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
@@ -188,9 +329,16 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
     async def handle_voice_message(message: Message):
         """Обработка голосовых сообщений"""
         try:
+            logger.info("[VOICE] Начало обработки голосового сообщения")
+
             # Получаем или создаём пользователя и его текущий чат
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
+            logger.info(f"[VOICE] Пользователь: {user.id}, чат: {chat.id}")
+
+            # Получаем настройки
+            from src.config.settings import get_settings
+            settings = get_settings()
 
             # Сообщаем пользователю, что бот обрабатывает голосовое сообщение
             await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
@@ -200,126 +348,99 @@ def register_message_handlers(router: Router, chat_session_usecase, intent_detec
             )
 
             try:
-                # Получаем информацию о файле
+                # Получаем информацию о голосовом сообщении
                 file_id = message.voice.file_id
+                duration = message.voice.duration
+                file_size = message.voice.file_size if hasattr(message.voice, 'file_size') else 'unknown'
+                mime_type = message.voice.mime_type if hasattr(message.voice, 'mime_type') else 'audio/ogg'
 
-                # Создаем путь для сохранения
-                temp_dir = tempfile.gettempdir()
-                temp_file_path = os.path.join(temp_dir, f"voice_{int(time.time())}.ogg")
+                logger.info(
+                    f"[VOICE] Получено голосовое сообщение: file_id={file_id}, duration={duration}s, size={file_size}, mime_type={mime_type}")
 
-                # Скачиваем файл с помощью нашей вспомогательной функции
-                await download_telegram_file(message.bot, settings.TELEGRAM_TOKEN, file_id, temp_file_path)
+                # Скачиваем файл с голосовым сообщением
+                temp_file_path = await download_telegram_file(message.bot, file_id, None, settings)
+                logger.info(f"[VOICE] Голосовое сообщение сохранено в {temp_file_path}")
 
-                # Транскрибируем голосовое сообщение
+                # Проверяем, что файл существует и имеет нормальный размер
+                if not os.path.exists(temp_file_path):
+                    logger.error(f"[VOICE] Файл не существует: {temp_file_path}")
+                    raise Exception("Файл не был сохранен")
+
+                actual_file_size = os.path.getsize(temp_file_path)
+                logger.info(f"[VOICE] Размер сохраненного файла: {actual_file_size} байт")
+
+                if actual_file_size < 100:
+                    logger.warning(f"[VOICE] Файл слишком маленький ({actual_file_size} байт)")
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                    await message.answer(
+                        "⚠️ Извините, аудиофайл слишком маленький. Пожалуйста, отправьте более длинное голосовое сообщение.",
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard(user, chat)
+                    )
+                    try:
+                        os.remove(temp_file_path)
+                    except:
+                        pass
+                    return
+
+                # Отправляем на транскрибацию
+                logger.info(f"[VOICE] Отправляем файл {temp_file_path} на транскрибацию")
                 transcribed_text = await chat_session_usecase.transcribe_voice(user, chat, temp_file_path)
+                logger.info(f"[VOICE] Результат транскрибации: {transcribed_text[:100]}...")
+
+                # После транскрибации удаляем временный файл
+                try:
+                    os.remove(temp_file_path)
+                    logger.info(f"[VOICE] Временный файл удален: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.error(f"[VOICE] Ошибка при удалении временного файла: {cleanup_error}")
 
                 # Удаляем сообщение о загрузке
-                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                try:
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                except Exception as delete_error:
+                    logger.error(f"[VOICE] Ошибка при удалении сообщения: {delete_error}")
 
-                # Отправляем результат транскрибирования
+                # Отправляем результат транскрибации
                 await message.answer(
-                    f"🔊 → 📝 Транскрибировано:\n\n{transcribed_text}",
+                    f"🔊 → 📝 Распознанный текст:\n\n{transcribed_text}",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
-                # Удаляем временный файл
-                try:
-                    os.remove(temp_file_path)
-                    logger.info(f"Временный файл удален: {temp_file_path}")
-                except Exception as cleanup_error:
-                    logger.error(f"Ошибка при удалении временного файла: {cleanup_error}")
+                # Отправляем распознанный текст в чат с ИИ
+                await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+                result = await chat_session_usecase.send_message(user, chat, transcribed_text)
+
+                if "response" in result and "content" in result["response"]:
+                    content = result["response"]["content"]
+                    await send_long_message(message, content)
+
+                    # Если есть токены, отправляем информацию о них
+                    if "tokens" in result:
+                        await message.answer(
+                            f"👾 -{result['tokens']} caps",
+                            parse_mode="Markdown"
+                        )
 
             except Exception as file_error:
-                logger.error(f"Ошибка при обработке файла: {file_error}", exc_info=True)
-                await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                logger.error(f"[VOICE] Ошибка при обработке файла: {file_error}", exc_info=True)
+                # Удаляем сообщение о загрузке
+                try:
+                    await message.bot.delete_message(message.chat.id, processing_msg.message_id)
+                except Exception:
+                    pass
+
                 await message.answer(
-                    "❌ Не удалось обработать голосовое сообщение.",
+                    "❌ Не удалось обработать голосовое сообщение. Пожалуйста, попробуйте отправить текстовое сообщение.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
 
         except Exception as e:
-            logger.error(f"Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
+            logger.error(f"[VOICE] Общая ошибка при обработке голосового сообщения: {e}", exc_info=True)
             await message.answer(
-                "❌ Произошла ошибка при обработке голосового сообщения.",
+                "❌ Произошла ошибка при обработке голосового сообщения. Пожалуйста, попробуйте позже.",
                 parse_mode="Markdown"
             )
-
-
-async def _handle_chat_intent(chat_session_usecase, user, chat, text):
-    """Обработка намерения обычного чата"""
-    # Проверяем, есть ли у чата ID в BotHub
-    if not chat.bothub_chat_id:
-        # Создаем новый чат
-        await chat_session_usecase.create_new_chat(user, chat)
-
-    # Отправляем сообщение и получаем ответ
-    return await chat_session_usecase.send_message(user, chat, text)
-
-
-async def _process_chat_response(message, result, user, chat, chat_repository):
-    """Обработка ответа от чата"""
-    # Если контекст запоминается, увеличиваем счетчик контекста
-    if chat.context_remember:
-        chat.increment_context_counter()
-        await chat_repository.update(chat)
-
-    if "response" in result and "content" in result["response"]:
-        content = result["response"]["content"]
-
-        # Проверяем наличие формул и конвертируем их в изображения, если включено
-        if chat.formula_to_image:
-            # В полной версии здесь будет конвертация формул
-            # content = await formula_service.format_formulas(content)
-            pass
-
-        # Если сообщение слишком длинное, разбиваем его
-        if len(content) > 4000:
-            await send_long_message(message, content)
-        else:
-            await message.answer(
-                content,
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard(user, chat)
-            )
-
-        # Если есть информация о токенах, отправляем её
-        if "tokens" in result:
-            tokens_info = f"`-{result['tokens']} caps`"
-
-            # Добавляем информацию о контексте, если он включен
-            if chat.context_remember:
-                tokens_info += f"\n\nПродолжить: /continue\n\nСбросить контекст: /reset"
-
-            await message.answer(
-                tokens_info,
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard(user, chat)
-            )
-
-        # Если есть вложения (например, изображения), отправляем их
-        if "attachments" in result["response"] and result["response"]["attachments"]:
-            for attachment in result["response"]["attachments"]:
-                if "file" in attachment and attachment["file"].get("type") == "IMAGE":
-                    url = attachment["file"].get("url", "")
-                    if not url and "path" in attachment["file"]:
-                        url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
-
-                    if url:
-                        await message.answer_photo(
-                            url,
-                            caption=None,
-                            reply_markup=get_main_keyboard(user, chat)
-                        )
-
-    # Если количество сообщений в контексте достигло кратного 10 значения,
-    # напоминаем пользователю о возможности сбросить контекст
-    if chat.context_remember and chat.context_counter > 0 and chat.context_counter % 10 == 0:
-        await message.answer(
-            "💡 Совет: Если ваш диалог продолжается уже достаточно долго, для учета всего накопленного "
-            "контекста расходуется больше caps. Чтобы избежать лишних затрат, рекомендуем регулярно "
-            "начинать новый чат с помощью команды /reset.",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard(user, chat)
-        )

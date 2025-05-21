@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 def register_config_handlers(router: Router, user_repository, chat_repository):
     """Регистрация обработчиков команд конфигурации"""
 
+    @router.message(F.text == "⚙️ Сменить модель")
+    async def handle_change_model_button(message: Message):
+        """Обработка нажатия на кнопку смены модели"""
+        await handle_gpt_config(message)
+
     @router.message(Command("gpt_config"))
     async def handle_gpt_config(message: Message):
         """Обработка команды /gpt_config для настройки моделей"""

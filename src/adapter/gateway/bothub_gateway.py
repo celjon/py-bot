@@ -126,7 +126,7 @@ class BothubGateway:
                     model_id = user.image_generation_model
                 else:
                     # Для других моделей генерации изображений
-                    model_id = user.image_generation_model or "dall-e"
+                    model_id = user.image_generation_model
                     response = await self.client.create_new_chat(
                         access_token,
                         user.bothub_group_id,
