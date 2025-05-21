@@ -288,8 +288,28 @@ class BothubClient:
             "stream": False
         }
 
+        logger.info(f"📨 Отправка сообщения: '{message[:50]}...' в чат {chat_id}")
+
         try:
             response = await self._make_request("v2/message/send", "POST", headers, data, timeout=60)
+            logger.info(f"📨 Получен ответ от сервера для сообщения")
+
+            # Детальное логирование ответа в зависимости от его содержимого
+            if "content" in response:
+                logger.info(f"📨 Ответ содержит контент: '{response['content'][:50]}...'")
+
+            if "images" in response and response["images"]:
+                logger.info(f"📨 Ответ содержит {len(response['images'])} изображений")
+                for i, img in enumerate(response["images"]):
+                    status = img.get("status", "UNKNOWN")
+                    img_id = img.get("original_id", "NO_ID")
+                    logger.info(f"📨 Изображение {i + 1}: статус={status}, ID={img_id}")
+
+            if "attachments" in response:
+                logger.info(f"📨 Ответ содержит {len(response['attachments'])} вложений")
+
+            if "transaction" in response and "amount" in response["transaction"]:
+                logger.info(f"📨 Ответ содержит информацию о токенах: {response['transaction']['amount']}")
 
             result = {"response": {}}
 
@@ -319,12 +339,34 @@ class BothubClient:
 
             return result
         except Exception as e:
-            logger.error(f"Ошибка при отправке сообщения: {str(e)}")
-            return {
-                "response": {
-                    "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
+            logger.error(f"📨 Ошибка при отправке сообщения: {str(e)}")
+
+            # Улучшенное логирование ошибок
+            error_message = str(e)
+            if "NOT_ENOUGH_TOKENS" in error_message:
+                logger.error(f"📨 Недостаточно токенов для запроса")
+                return {
+                    "response": {
+                        "content": "Недостаточно токенов для выполнения запроса. Пожалуйста, пополните баланс или привяжите аккаунт с достаточным количеством токенов."
+                    },
+                    "error": "NOT_ENOUGH_TOKENS"
                 }
-            }
+            elif "MODEL_NOT_FOUND" in error_message:
+                logger.error(f"📨 Модель не найдена")
+                return {
+                    "response": {
+                        "content": "Выбранная модель недоступна. Пожалуйста, выберите другую модель."
+                    },
+                    "error": "MODEL_NOT_FOUND"
+                }
+            else:
+                logger.error(f"📨 Общая ошибка: {error_message}")
+                return {
+                    "response": {
+                        "content": f"Извините, произошла ошибка при обработке запроса: {str(e)}"
+                    },
+                    "error": "GENERAL_ERROR"
+                }
 
     async def save_system_prompt(self, access_token: str, chat_id: str, system_prompt: str) -> Dict[str, Any]:
         """

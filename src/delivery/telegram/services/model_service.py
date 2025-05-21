@@ -62,17 +62,6 @@ async def show_model_selection(message, user_repository, chat_repository):
         logger.info(f"=== ПОЛНЫЙ ОТВЕТ API МОДЕЛЕЙ ===")
         logger.info(f"Общее количество моделей: {len(models)}")
 
-        for i, model in enumerate(models):
-            logger.info(f"--- Модель {i + 1} ---")
-            logger.info(f"ID: {model.get('id')}")
-            logger.info(f"Label: {model.get('label')}")
-            logger.info(f"Name: {model.get('name')}")
-            logger.info(f"Features: {model.get('features')}")
-            logger.info(f"Is_allowed: {model.get('is_allowed')}")
-            logger.info(f"Is_default: {model.get('is_default')}")
-            logger.info(f"Parent_id: {model.get('parent_id')}")
-            logger.info(f"Все поля: {model}")
-            logger.info("---")
 
         # Фильтруем текстовые модели
         text_models = [

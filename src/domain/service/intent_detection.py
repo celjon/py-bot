@@ -106,17 +106,21 @@ class IntentDetectionService:
                                                "detected_keywords": list(detected_keywords)}
 
         # Проверяем на намерение генерации изображений
-        for pattern in self.image_generation_keywords:
-            if re.search(pattern, text_lower, re.IGNORECASE):
-                # Добавляем найденное ключевое слово для анализа
-                matched = re.search(pattern, text_lower, re.IGNORECASE)
-                detected_keywords.add(matched.group(0))
+        logger.info(f"Анализ текста для определения намерения: '{text}'")
 
-                # Определяем запрос для генерации изображения
-                image_prompt = self._extract_image_prompt(text_lower, pattern)
-                logger.info(f"Detected image generation intent with keywords: {detected_keywords}")
-                return IntentType.IMAGE_GENERATION, {"prompt": image_prompt or text,
-                                                     "detected_keywords": list(detected_keywords)}
+        # При обнаружении намерения генерации изображений
+        if any(re.search(pattern, text_lower, re.IGNORECASE) for pattern in self.image_generation_keywords):
+            matched_patterns = []
+            for pattern in self.image_generation_keywords:
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    matched = re.search(pattern, text_lower, re.IGNORECASE)
+                    matched_patterns.append(matched.group(0))
+
+            logger.info(f"🎨 Обнаружено намерение генерации изображения. Ключевые слова: {matched_patterns}")
+            image_prompt = self._extract_image_prompt(text_lower, matched_patterns[0])
+            logger.info(f"🎨 Извлеченный промпт для изображения: '{image_prompt}'")
+
+            return IntentType.IMAGE_GENERATION, {"prompt": image_prompt or text, "detected_keywords": matched_patterns}
 
         # Учитываем контекст предыдущих сообщений, если он предоставлен
         if user_id and chat_context and user_id in self.context:

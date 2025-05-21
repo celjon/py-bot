@@ -24,9 +24,13 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
     async def process_image_generation(message: Message, user, chat, prompt):
         """Обработка запроса на генерацию изображения"""
+        logger.info(f"🎨 Начало обработки запроса на генерацию изображения от пользователя {user.id}")
+        logger.info(f"🎨 Промпт для генерации: '{prompt}'")
+
         bot = message.bot
 
         # Отправляем сообщение о генерации
+        logger.info(f"🎨 Отправка сообщения о начале генерации изображения")
         processing_msg = await message.answer(
             "🎨 Генерирую изображение...",
             parse_mode="Markdown"
@@ -34,21 +38,27 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
         try:
             # Отправляем статус "uploading_photo"
+            logger.info(f"🎨 Отправка статуса 'uploading_photo'")
             await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
 
             # Генерируем изображение без видимого переключения чата
+            logger.info(f"🎨 Вызов usecase для генерации изображения")
             result, model_used = await image_generation_usecase.generate_image_without_switching_chat(user, chat,
                                                                                                       prompt)
+            logger.info(f"🎨 Получен результат генерации, модель: {model_used}")
+            logger.info(f"🎨 Результат: {result}")
 
             # Удаляем сообщение о генерации
             try:
+                logger.info(f"🎨 Удаление сообщения о генерации")
                 await bot.delete_message(message.chat.id, processing_msg.message_id)
             except Exception as e:
-                logger.error(f"Ошибка при удалении сообщения о генерации: {e}")
+                logger.error(f"🎨 Ошибка при удалении сообщения о генерации: {e}")
 
             # Обрабатываем результат
             if "response" in result and "attachments" in result["response"] and result["response"]["attachments"]:
                 # Находим изображения в ответе
+                logger.info(f"🎨 Обработка вложений из ответа")
                 images = []
                 for attachment in result["response"]["attachments"]:
                     if "file" in attachment and attachment["file"].get("type") == "IMAGE":
@@ -56,11 +66,14 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                         if not url and "path" in attachment["file"]:
                             url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
                         if url:
+                            logger.info(f"🎨 Найдено изображение: {url}")
                             images.append(url)
 
                 # Отправляем изображения пользователю
                 if images:
+                    logger.info(f"🎨 Отправка {len(images)} изображений пользователю")
                     for url in images:
+                        logger.info(f"🎨 Отправка изображения: {url}")
                         await message.answer_photo(
                             url,
                             caption=f"🎨 Изображение сгенерировано с использованием модели *{model_used}*",
@@ -70,18 +83,25 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
                     # Если есть информация о токенах, отправляем её
                     if "tokens" in result:
+                        logger.info(f"🎨 Отправка информации о токенах: {result['tokens']}")
                         await message.answer(
                             f"`-{result['tokens']} caps`",
                             parse_mode="Markdown"
                         )
 
                     # Обновляем контекст пользователя в сервисе определения намерений
+                    logger.info(f"🎨 Обновление контекста пользователя")
                     intent_detection_service.update_user_context(str(user.telegram_id),
                                                                  IntentType.IMAGE_GENERATION,
                                                                  {"prompt": prompt, "success": True})
                     return
 
+                logger.info(f"🎨 Изображения не найдены в ответе")
+            else:
+                logger.info(f"🎨 Вложения не найдены в ответе")
+
             # Если не удалось сгенерировать изображение
+            logger.info(f"🎨 Не удалось сгенерировать изображение, отправка сообщения об ошибке")
             await message.answer(
                 "❌ Не удалось сгенерировать изображение. Пожалуйста, попробуйте другой запрос.",
                 parse_mode="Markdown",
@@ -89,17 +109,28 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             )
 
         except Exception as e:
-            logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
+            logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
 
+            error_message = str(e)
             # Проверяем, содержит ли ошибка код "MODEL_NOT_FOUND"
-            if "MODEL_NOT_FOUND" in str(e):
+            if "MODEL_NOT_FOUND" in error_message:
+                logger.info(f"🎨 Обнаружена ошибка MODEL_NOT_FOUND")
                 await message.answer(
                     "❌ Не удалось сгенерировать изображение. В вашем аккаунте нет доступа к моделям генерации изображений. "
                     "Пожалуйста, проверьте подписку или свяжитесь с поддержкой.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
                 )
+            elif "NOT_ENOUGH_TOKENS" in error_message:
+                logger.info(f"🎨 Обнаружена ошибка NOT_ENOUGH_TOKENS")
+                await message.answer(
+                    "❌ Не удалось сгенерировать изображение. На вашем аккаунте недостаточно токенов. "
+                    "Пожалуйста, пополните баланс или привяжите аккаунт с достаточным количеством токенов.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
             else:
+                logger.info(f"🎨 Обнаружена общая ошибка: {error_message}")
                 await message.answer(
                     "❌ Произошла ошибка при генерации изображения. Пожалуйста, попробуйте позже.",
                     parse_mode="Markdown",

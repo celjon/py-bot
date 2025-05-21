@@ -70,25 +70,40 @@ class ImageGenerationUseCase:
         Returns:
             Tuple[Dict[str, Any], str]: Ответ от BotHub API и используемая модель
         """
-        logger.info(f"Seamlessly generating image for prompt: {prompt} for user {user.id}")
+        logger.info(f"🎨 Запуск процесса генерации изображения для пользователя {user.id}")
+        logger.info(f"🎨 Промпт для генерации: '{prompt}'")
+        logger.info(f"🎨 Текущая модель чата: '{chat.bothub_chat_model}'")
+        logger.info(f"🎨 Модель для генерации изображений: '{user.image_generation_model}'")
 
         # Сохраняем оригинальные данные чата
         original_chat_id = chat.bothub_chat_id
         original_model = chat.bothub_chat_model
+        logger.info(f"🎨 Сохранение оригинального ID чата: {original_chat_id}")
+        logger.info(f"🎨 Сохранение оригинальной модели: {original_model}")
 
         # Устанавливаем модель для генерации изображений
         image_model = user.image_generation_model
+        logger.info(f"🎨 Установка модели для генерации изображений: {image_model}")
         chat.bothub_chat_model = image_model
 
         try:
             # Создаем временный чат для генерации изображений
+            logger.info(f"🎨 Создание временного чата для генерации изображений")
             await self.gateway.create_new_chat(user, chat, True)
+            logger.info(f"🎨 Временный чат создан с ID: {chat.bothub_chat_id}")
 
             # Генерируем изображение
+            logger.info(f"🎨 Отправка запроса на генерацию изображения с промптом: '{prompt}'")
             result = await self.gateway.send_message(user, chat, prompt, files)
+            logger.info(f"🎨 Получен ответ от API: {result}")
 
             return result, image_model
+        except Exception as e:
+            logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
+            raise
         finally:
             # Восстанавливаем оригинальные данные чата
+            logger.info(f"🎨 Восстановление оригинального ID чата: {original_chat_id}")
+            logger.info(f"🎨 Восстановление оригинальной модели: {original_model}")
             chat.bothub_chat_id = original_chat_id
             chat.bothub_chat_model = original_model
