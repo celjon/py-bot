@@ -100,39 +100,33 @@ class BothubGateway:
             # Выбор модели в зависимости от типа чата
             if is_image_generation:
                 # Логика для создания чата генерации изображений
-                if user.image_generation_model and "flux" in user.image_generation_model:
-                    # Логика для моделей Flux (аналог PHP-логики)
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        "replicate-flux"  # Родительская модель для Flux
-                    )
 
-                    # Обновляем родительскую модель
-                    await self.client.update_parent_model(
-                        access_token,
-                        response["id"],
-                        "replicate-flux"
-                    )
+                # Если модель не указана, используем модель пользователя или по умолчанию
+                if not chat.bothub_chat_model:
+                    if user.image_generation_model:
+                        chat.bothub_chat_model = user.image_generation_model
+                    else:
+                        # Проверяем, что модель является моделью для генерации изображений
+                        image_model_prefixes = ["dall-e", "midjourney", "stable-diffusion", "kandinsky", "flux"]
+                        if not any(chat.bothub_chat_model.startswith(prefix) for prefix in image_model_prefixes):
+                            chat.bothub_chat_model = "dall-e"
+                            logger.info(
+                                f"Установлена модель по умолчанию для генерации изображений: {chat.bothub_chat_model}")
 
-                    # Сохраняем конкретную модель
-                    await self.client.save_model(
-                        access_token,
-                        response["id"],
-                        user.image_generation_model
-                    )
+                model_id = chat.bothub_chat_model
+                logger.info(f"Создание чата для генерации изображений с моделью {model_id}")
 
-                    model_id = user.image_generation_model
-                else:
-                    # Для других моделей генерации изображений
-                    model_id = user.image_generation_model
-                    response = await self.client.create_new_chat(
-                        access_token,
-                        user.bothub_group_id,
-                        name,
-                        model_id
-                    )
+                response = await self.client.create_new_chat(
+                    access_token,
+                    user.bothub_group_id,
+                    name,
+                    model_id
+                )
+
+                # Обновляем данные чата
+                chat.bothub_chat_id = response["id"]
+                if not chat.bothub_chat_model:
+                    chat.bothub_chat_model = model_id
             else:
                 # Логика для создания текстового чата
 
@@ -228,10 +222,10 @@ class BothubGateway:
                     )
                     model_id = None
 
-            # Обновляем данные чата
-            chat.bothub_chat_id = response["id"]
-            if model_id:
-                chat.bothub_chat_model = model_id
+                # Обновляем данные чата
+                chat.bothub_chat_id = response["id"]
+                if model_id:
+                    chat.bothub_chat_model = model_id
 
         except Exception as e:
             logger.error(f"Ошибка при создании чата: {str(e)}")

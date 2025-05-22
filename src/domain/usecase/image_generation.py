@@ -60,15 +60,6 @@ class ImageGenerationUseCase:
                                                     files: Optional[List[str]] = None) -> Tuple[Dict[str, Any], str]:
         """
         Генерация изображения без видимого переключения чата для пользователя
-
-        Args:
-            user: Пользователь
-            chat: Чат
-            prompt: Запрос для генерации изображения
-            files: Список URL файлов (для edit-изображений)
-
-        Returns:
-            Tuple[Dict[str, Any], str]: Ответ от BotHub API и используемая модель
         """
         logger.info(f"🎨 Запуск процесса генерации изображения для пользователя {user.id}")
         logger.info(f"🎨 Промпт для генерации: '{prompt}'")
@@ -81,15 +72,49 @@ class ImageGenerationUseCase:
         logger.info(f"🎨 Сохранение оригинального ID чата: {original_chat_id}")
         logger.info(f"🎨 Сохранение оригинальной модели: {original_model}")
 
-        # Устанавливаем модель для генерации изображений
-        image_model = user.image_generation_model
-        logger.info(f"🎨 Установка модели для генерации изображений: {image_model}")
-        chat.bothub_chat_model = image_model
-
         try:
-            # Создаем временный чат для генерации изображений
-            logger.info(f"🎨 Создание временного чата для генерации изображений")
-            await self.gateway.create_new_chat(user, chat, True)
+            # Получаем доступные модели для генерации изображений
+            access_token = await self.gateway.get_access_token(user)
+            models = await self.gateway.client.list_models(access_token)
+
+            # Фильтруем модели для генерации изображений
+            image_models = [model for model in models if "TEXT_TO_IMAGE" in model.get("features", [])]
+            available_image_models = [model for model in image_models if model.get("is_allowed", True)]
+
+            # Проверяем наличие доступных моделей
+            if not available_image_models:
+                logger.warning(f"🎨 Нет доступных моделей для генерации изображений")
+                raise Exception("MODEL_NOT_FOUND: У вас нет доступа к моделям генерации изображений")
+
+            # Выбираем модель - сначала проверяем текущую модель пользователя
+            chosen_model = None
+            if user.image_generation_model:
+                for model in available_image_models:
+                    if model["id"] == user.image_generation_model:
+                        chosen_model = model["id"]
+                        break
+
+            # Если модель не выбрана или недоступна, берем первую доступную
+            if not chosen_model:
+                chosen_model = available_image_models[0]["id"]
+                # Сохраняем выбранную модель для пользователя
+                user.image_generation_model = chosen_model
+                try:
+                    from src.adapter.repository.user_repository import UserRepository
+                    user_repo = UserRepository()
+                    await user_repo.update(user)
+                    logger.info(f"🎨 Автоматически выбрана модель: {chosen_model}")
+                except Exception as e:
+                    logger.error(f"🎨 Ошибка при обновлении модели пользователя: {e}")
+
+            # Применяем выбранную модель к текущему чату
+            chat.bothub_chat_model = chosen_model
+            logger.info(f"🎨 Установка модели для генерации изображений: {chosen_model}")
+
+            # Создаем временный чат без флага is_image_generation=True
+            # Это позволит избежать проблемы с DEFAULT_MODEL_NOT_FOUND, т.к. мы уже установили
+            # проверенную модель в chat.bothub_chat_model
+            await self.gateway.create_new_chat(user, chat, False)
             logger.info(f"🎨 Временный чат создан с ID: {chat.bothub_chat_id}")
 
             # Генерируем изображение
@@ -97,7 +122,7 @@ class ImageGenerationUseCase:
             result = await self.gateway.send_message(user, chat, prompt, files)
             logger.info(f"🎨 Получен ответ от API: {result}")
 
-            return result, image_model
+            return result, chosen_model
         except Exception as e:
             logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
             raise

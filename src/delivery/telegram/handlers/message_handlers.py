@@ -91,7 +91,7 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
                     # Обновляем контекст пользователя в сервисе определения намерений
                     logger.info(f"🎨 Обновление контекста пользователя")
-                    intent_detection_service.update_user_context(str(user.telegram_id),
+                    intent_detection_service.update_user_context(str(user.tg_id),
                                                                  IntentType.IMAGE_GENERATION,
                                                                  {"prompt": prompt, "success": True})
                     return
@@ -112,11 +112,10 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
 
             error_message = str(e)
-            # Проверяем, содержит ли ошибка код "MODEL_NOT_FOUND"
             if "MODEL_NOT_FOUND" in error_message:
                 logger.info(f"🎨 Обнаружена ошибка MODEL_NOT_FOUND")
                 await message.answer(
-                    "❌ Не удалось сгенерировать изображение. В вашем аккаунте нет доступа к моделям генерации изображений. "
+                    "❌ В вашем аккаунте нет доступа к моделям генерации изображений. "
                     "Пожалуйста, проверьте подписку или свяжитесь с поддержкой.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
@@ -124,7 +123,7 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             elif "NOT_ENOUGH_TOKENS" in error_message:
                 logger.info(f"🎨 Обнаружена ошибка NOT_ENOUGH_TOKENS")
                 await message.answer(
-                    "❌ Не удалось сгенерировать изображение. На вашем аккаунте недостаточно токенов. "
+                    "❌ На вашем аккаунте недостаточно токенов для генерации изображений. "
                     "Пожалуйста, пополните баланс или привяжите аккаунт с достаточным количеством токенов.",
                     parse_mode="Markdown",
                     reply_markup=get_main_keyboard(user, chat)
