@@ -28,9 +28,10 @@ class ChatSessionUseCase:
         # Сбрасываем счетчик контекста
         chat.reset_context_counter()
 
-        # Используем доработанную логику выбора модели по умолчанию
-        from src.delivery.telegram.services.model_service import create_new_chat_with_model
-        await create_new_chat_with_model(user, chat, self.gateway)
+        # Создаем новый чат через gateway
+        await self.gateway.create_new_chat(user, chat, is_image_generation)
+
+        logger.info(f"Новый чат создан: bothub_chat_id={chat.bothub_chat_id}, model={chat.bothub_chat_model}")
 
         # В PHP также обновляется буфер, если он есть
         if hasattr(chat, 'buffer') and chat.buffer:

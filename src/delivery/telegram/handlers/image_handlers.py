@@ -70,29 +70,57 @@ def register_image_handlers(router: Router, image_generation_usecase, user_repos
         """Обработка нажатия на кнопку смены модели генерации изображений"""
         await handle_image_model_command(message)
 
-    # Обработчик выбора модели генерации изображений
-    @router.callback_query(lambda c: c.data and "img_m" in json.loads(c.data).get("t", ""))
+    from .base_handlers import get_or_create_user, get_or_create_chat, get_or_create_user_from_callback
+
+    def is_image_model_callback(callback: CallbackQuery) -> bool:
+        """Проверяет, является ли callback выбором модели изображения"""
+        try:
+            if not callback.data:
+                return False
+
+            data = json.loads(callback.data)
+            callback_type = data.get("t", "")
+
+            # Проверяем точное соответствие типа
+            return callback_type == "img_m"
+        except (json.JSONDecodeError, KeyError):
+            return False
+
+    @router.callback_query(is_image_model_callback)
     async def handle_image_model_selection(callback: CallbackQuery):
         try:
+            logger.info(f"🔄 Обработка callback выбора модели изображения: {callback.data}")
+
             # Декодируем данные callback
             data = json.loads(callback.data)
             model_id = data.get("m")
             is_allowed = data.get("a") == 1
 
+            logger.info(f"🔧 Выбрана модель: {model_id}, доступна: {is_allowed}")
+
             if not is_allowed:
                 await callback.answer("⛔ Эта модель недоступна в вашем тарифе")
                 return
 
-            # Получаем пользователя и чат
-            user = await get_or_create_user(callback.message, user_repository)
+            # ИСПРАВЛЕНИЕ: Используем правильную функцию для callback!
+            user = await get_or_create_user_from_callback(callback, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
+
+            logger.info(f"✅ Получен пользователь {user.id} для обновления модели")
+
+            # Сохраняем старую модель для логирования
+            old_model = user.image_generation_model
 
             # Обновляем модель генерации изображений у пользователя
             user.image_generation_model = model_id
             await user_repository.update(user)
 
+            logger.info(
+                f"✅ Модель генерации изображений обновлена для пользователя {user.id}: {old_model} -> {model_id}")
+
             # Закрываем инлайн клавиатуру
             await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.answer(f"Модель {model_id} выбрана!")
 
             # Отправляем сообщение об успешном выборе модели
             await callback.message.answer(
@@ -101,8 +129,8 @@ def register_image_handlers(router: Router, image_generation_usecase, user_repos
                 reply_markup=get_main_keyboard(user, chat)
             )
 
-            logger.info(f"Пользователь {user.id} выбрал модель генерации изображений {model_id}")
+            logger.info(f"🎯 Успешно обновлена модель генерации для пользователя {user.id}: {model_id}")
 
         except Exception as e:
-            logger.error(f"Ошибка при выборе модели генерации изображений: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при выборе модели генерации изображений: {e}", exc_info=True)
             await callback.answer("Произошла ошибка при выборе модели")

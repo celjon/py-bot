@@ -81,6 +81,8 @@ class ImageGenerationUseCase:
             image_models = [model for model in models if "TEXT_TO_IMAGE" in model.get("features", [])]
             available_image_models = [model for model in image_models if model.get("is_allowed", True)]
 
+            logger.info(f"🎨 Найдено {len(available_image_models)} доступных моделей для генерации изображений")
+
             # Проверяем наличие доступных моделей
             if not available_image_models:
                 logger.warning(f"🎨 Нет доступных моделей для генерации изображений")
@@ -107,15 +109,13 @@ class ImageGenerationUseCase:
                 except Exception as e:
                     logger.error(f"🎨 Ошибка при обновлении модели пользователя: {e}")
 
-            # Применяем выбранную модель к текущему чату
+            # ИСПРАВЛЕНИЕ: Устанавливаем выбранную модель в чат ДО создания
             chat.bothub_chat_model = chosen_model
             logger.info(f"🎨 Установка модели для генерации изображений: {chosen_model}")
 
-            # Создаем временный чат без флага is_image_generation=True
-            # Это позволит избежать проблемы с DEFAULT_MODEL_NOT_FOUND, т.к. мы уже установили
-            # проверенную модель в chat.bothub_chat_model
-            await self.gateway.create_new_chat(user, chat, False)
-            logger.info(f"🎨 Временный чат создан с ID: {chat.bothub_chat_id}")
+            # Создаем чат с флагом is_image_generation=True
+            await self.gateway.create_new_chat(user, chat, is_image_generation=True)
+            logger.info(f"🎨 Чат для генерации изображений создан с ID: {chat.bothub_chat_id}")
 
             # Генерируем изображение
             logger.info(f"🎨 Отправка запроса на генерацию изображения с промптом: '{prompt}'")

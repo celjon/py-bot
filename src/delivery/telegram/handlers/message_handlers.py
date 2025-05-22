@@ -30,7 +30,6 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
         bot = message.bot
 
         # Отправляем сообщение о генерации
-        logger.info(f"🎨 Отправка сообщения о начале генерации изображения")
         processing_msg = await message.answer(
             "🎨 Генерирую изображение...",
             parse_mode="Markdown"
@@ -38,19 +37,14 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
         try:
             # Отправляем статус "uploading_photo"
-            logger.info(f"🎨 Отправка статуса 'uploading_photo'")
             await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
 
             # Генерируем изображение без видимого переключения чата
-            logger.info(f"🎨 Вызов usecase для генерации изображения")
             result, model_used = await image_generation_usecase.generate_image_without_switching_chat(user, chat,
                                                                                                       prompt)
-            logger.info(f"🎨 Получен результат генерации, модель: {model_used}")
-            logger.info(f"🎨 Результат: {result}")
 
             # Удаляем сообщение о генерации
             try:
-                logger.info(f"🎨 Удаление сообщения о генерации")
                 await bot.delete_message(message.chat.id, processing_msg.message_id)
             except Exception as e:
                 logger.error(f"🎨 Ошибка при удалении сообщения о генерации: {e}")
@@ -58,7 +52,6 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             # Обрабатываем результат
             if "response" in result and "attachments" in result["response"] and result["response"]["attachments"]:
                 # Находим изображения в ответе
-                logger.info(f"🎨 Обработка вложений из ответа")
                 images = []
                 for attachment in result["response"]["attachments"]:
                     if "file" in attachment and attachment["file"].get("type") == "IMAGE":
@@ -66,14 +59,11 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                         if not url and "path" in attachment["file"]:
                             url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
                         if url:
-                            logger.info(f"🎨 Найдено изображение: {url}")
                             images.append(url)
 
                 # Отправляем изображения пользователю
                 if images:
-                    logger.info(f"🎨 Отправка {len(images)} изображений пользователю")
                     for url in images:
-                        logger.info(f"🎨 Отправка изображения: {url}")
                         await message.answer_photo(
                             url,
                             caption=f"🎨 Изображение сгенерировано с использованием модели *{model_used}*",
@@ -83,25 +73,18 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
                     # Если есть информация о токенах, отправляем её
                     if "tokens" in result:
-                        logger.info(f"🎨 Отправка информации о токенах: {result['tokens']}")
                         await message.answer(
                             f"`-{result['tokens']} caps`",
                             parse_mode="Markdown"
                         )
 
                     # Обновляем контекст пользователя в сервисе определения намерений
-                    logger.info(f"🎨 Обновление контекста пользователя")
                     intent_detection_service.update_user_context(str(user.tg_id),
                                                                  IntentType.IMAGE_GENERATION,
                                                                  {"prompt": prompt, "success": True})
                     return
 
-                logger.info(f"🎨 Изображения не найдены в ответе")
-            else:
-                logger.info(f"🎨 Вложения не найдены в ответе")
-
             # Если не удалось сгенерировать изображение
-            logger.info(f"🎨 Не удалось сгенерировать изображение, отправка сообщения об ошибке")
             await message.answer(
                 "❌ Не удалось сгенерировать изображение. Пожалуйста, попробуйте другой запрос.",
                 parse_mode="Markdown",
@@ -112,8 +95,27 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
 
             error_message = str(e)
-            if "MODEL_NOT_FOUND" in error_message:
-                logger.info(f"🎨 Обнаружена ошибка MODEL_NOT_FOUND")
+
+            # Специальная обработка для разных типов ошибок
+            if "NO_AVAILABLE_ACCOUNTS" in error_message:
+                await message.answer(
+                    "⏳ В данный момент нет доступных аккаунтов для генерации изображений. "
+                    "Пожалуйста, попробуйте позже.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+            elif "FLOOD_ERROR" in error_message:
+                # Извлекаем время ожидания из ошибки
+                import re
+                timeout_match = re.search(r'(\d+\.?\d*)\s*seconds', error_message)
+                timeout = int(float(timeout_match.group(1))) if timeout_match else 60
+
+                await message.answer(
+                    f"⏱ Слишком много запросов. Пожалуйста, подождите {timeout} секунд и попробуйте снова.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard(user, chat)
+                )
+            elif "MODEL_NOT_FOUND" in error_message:
                 await message.answer(
                     "❌ В вашем аккаунте нет доступа к моделям генерации изображений. "
                     "Пожалуйста, проверьте подписку или свяжитесь с поддержкой.",
@@ -121,7 +123,6 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                     reply_markup=get_main_keyboard(user, chat)
                 )
             elif "NOT_ENOUGH_TOKENS" in error_message:
-                logger.info(f"🎨 Обнаружена ошибка NOT_ENOUGH_TOKENS")
                 await message.answer(
                     "❌ На вашем аккаунте недостаточно токенов для генерации изображений. "
                     "Пожалуйста, пополните баланс или привяжите аккаунт с достаточным количеством токенов.",
@@ -129,7 +130,6 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                     reply_markup=get_main_keyboard(user, chat)
                 )
             else:
-                logger.info(f"🎨 Обнаружена общая ошибка: {error_message}")
                 await message.answer(
                     "❌ Произошла ошибка при генерации изображения. Пожалуйста, попробуйте позже.",
                     parse_mode="Markdown",
@@ -190,6 +190,7 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                 return
 
             # Проверяем, не является ли сообщение командой клавиатуры
+
             elif message.text == "🔄 Новый чат":
                 try:
                     # Создаем новый чат
@@ -200,10 +201,17 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
                     # Сбрасываем контекст текущего чата
                     chat.reset_context_counter()
-                    await chat_repository.update(chat)
 
-                    # Создаем новый чат через usecase
+                    # ИСПРАВЛЕНИЕ: Создаем новый чат через usecase
                     await chat_session_usecase.create_new_chat(user, chat)
+
+                    # ВАЖНО: Сохраняем обновленный чат в базе данных
+                    await chat_repository.update(chat)
+                    logger.info(f"Обновлен чат в БД: {chat.bothub_chat_id}")
+
+                    # ВАЖНО: Сохраняем обновленного пользователя в базе данных
+                    await user_repository.update(user)
+                    logger.info(f"Обновлен пользователь в БД: bothub_id={user.bothub_id}")
 
                     model_name = chat.bothub_chat_model or "default"
                     await message.answer(
@@ -212,7 +220,7 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                         reply_markup=get_main_keyboard(user, chat)
                     )
 
-                    logger.info(f"Пользователь {user.id} создал новый чат")
+                    logger.info(f"Пользователь {user.id} создал новый чат {chat.bothub_chat_id}")
                 except Exception as e:
                     logger.error(f"Ошибка при создании нового чата: {e}", exc_info=True)
                     await message.answer(

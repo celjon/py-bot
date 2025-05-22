@@ -145,16 +145,30 @@ class BothubClient:
         if model_id:
             data["modelId"] = model_id
 
-        logger.info(f"Создание чата с данными: {data}")
+        logger.info(f"🔧 Создание чата с данными: {data}")
+        logger.info(f"🔧 Переданный model_id: {model_id}")
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        return await self._make_request("v2/chat", "POST", headers, data)
+        response = await self._make_request("v2/chat", "POST", headers, data)
+
+        logger.info(f"🔧 Ответ создания чата: {response}")
+        return response
 
     async def list_models(self, access_token: str) -> List[Dict[str, Any]]:
         """Получение списка моделей"""
         headers = {"Authorization": f"Bearer {access_token}"}
         try:
             response = await self._make_request("v2/model/list", "GET", headers)
+
+            logger.info(f"🔧 Получено {len(response)} моделей от API")
+
+            # Логируем только модели для генерации изображений
+            image_models = [model for model in response if "TEXT_TO_IMAGE" in model.get("features", [])]
+            logger.info(f"🔧 Модели для генерации изображений:")
+            for model in image_models:
+                logger.info(
+                    f"🔧   - {model.get('id')} | {model.get('label', 'No label')} | allowed: {model.get('is_allowed', False)} | parent: {model.get('parent_id', 'None')}")
+
             return response
         except Exception as e:
             logger.error(f"Ошибка при получении списка моделей: {str(e)}")

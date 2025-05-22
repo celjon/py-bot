@@ -11,9 +11,13 @@ logger = logging.getLogger(__name__)
 async def get_user_from_telegram_user(telegram_user: TelegramUser, user_repository):
     """Универсальная функция для получения/создания пользователя из TelegramUser"""
     telegram_id = str(telegram_user.id)
+
+    logger.info(f"🔍 Поиск пользователя с Telegram ID: {telegram_id}")
+
     user = await user_repository.find_by_tg_id(telegram_id)
 
     if not user:
+        logger.info(f"🆕 Пользователь не найден, создаем нового с Telegram ID: {telegram_id}")
         user = User(
             id=0,  # Временный ID, будет заменён после сохранения
             tg_id=telegram_id,
@@ -26,7 +30,9 @@ async def get_user_from_telegram_user(telegram_user: TelegramUser, user_reposito
         )
         user_id = await user_repository.save(user)
         user.id = user_id
-        logger.info(f"Создан новый пользователь {user_id} для Telegram ID {telegram_id}")
+        logger.info(f"✅ Создан новый пользователь {user_id} для Telegram ID {telegram_id}")
+    else:
+        logger.info(f"✅ Найден существующий пользователь {user.id} для Telegram ID {telegram_id}")
 
     return user
 
@@ -38,6 +44,7 @@ async def get_or_create_user(message: Message, user_repository):
 
 async def get_or_create_user_from_callback(callback, user_repository):
     """Получение или создание пользователя из callback запроса"""
+    logger.info(f"🔄 Обработка callback от пользователя: {callback.from_user.id}")
     return await get_user_from_telegram_user(callback.from_user, user_repository)
 
 
