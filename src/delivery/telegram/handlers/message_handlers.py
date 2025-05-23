@@ -1,6 +1,6 @@
 # src/delivery/telegram/handlers/message_handlers.py
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from aiogram.enums.chat_action import ChatAction
 import logging
 import time
@@ -8,6 +8,10 @@ import os
 import asyncio
 import aiohttp
 from typing import List, Dict, Any, Optional, Tuple
+import tempfile
+import uuid
+from urllib.parse import urlparse
+import json
 
 from src.config.settings import Settings
 from ..keyboards.main_keyboard import get_main_keyboard
@@ -22,119 +26,243 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                               chat_repository, settings):
     """Регистрация обработчиков текстовых сообщений"""
 
-    async def process_image_generation(message: Message, user, chat, prompt):
-        """Обработка запроса на генерацию изображения"""
-        logger.info(f"🎨 Начало обработки запроса на генерацию изображения от пользователя {user.id}")
-        logger.info(f"🎨 Промпт для генерации: '{prompt}'")
-
-        bot = message.bot
-
-        # Отправляем сообщение о генерации
-        processing_msg = await message.answer(
-            "🎨 Генерирую изображение...",
-            parse_mode="Markdown"
-        )
-
+    async def download_image(url: str) -> Optional[str]:
+        """Скачивает изображение и возвращает путь к временному файлу"""
+        logger.info(f"⬇️ Загрузка изображения с URL: {url}")
+        
+        # Проверка пустой ссылки
+        if not url:
+            logger.error("⬇️ Передан пустой URL")
+            return None
+            
+        # Проверка для локальных путей в URL
+        if "local/images" in url:
+            logger.warning(f"⬇️ URL содержит указание на локальное хранилище: {url}")
+            # Изображение может быть недоступно извне, но попробуем скачать
+        
+        # Проверим валидность URL
         try:
-            # Отправляем статус "uploading_photo"
-            await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
-
-            # Генерируем изображение без видимого переключения чата
-            result, model_used = await image_generation_usecase.generate_image_without_switching_chat(user, chat,
-                                                                                                      prompt)
-
-            # Удаляем сообщение о генерации
-            try:
-                await bot.delete_message(message.chat.id, processing_msg.message_id)
-            except Exception as e:
-                logger.error(f"🎨 Ошибка при удалении сообщения о генерации: {e}")
-
-            # Обрабатываем результат
-            if "response" in result and "attachments" in result["response"] and result["response"]["attachments"]:
-                # Находим изображения в ответе
-                images = []
-                for attachment in result["response"]["attachments"]:
-                    if "file" in attachment and attachment["file"].get("type") == "IMAGE":
-                        url = attachment["file"].get("url", "")
-                        if not url and "path" in attachment["file"]:
-                            url = f"https://storage.bothub.chat/bothub-storage/{attachment['file']['path']}"
-                        if url:
-                            images.append(url)
-
-                # Отправляем изображения пользователю
-                if images:
-                    for url in images:
-                        await message.answer_photo(
-                            url,
-                            caption=f"🎨 Изображение сгенерировано с использованием модели *{model_used}*",
-                            parse_mode="Markdown",
-                            reply_markup=get_main_keyboard(user, chat)
-                        )
-
-                    # Если есть информация о токенах, отправляем её
-                    if "tokens" in result:
-                        await message.answer(
-                            f"`-{result['tokens']} caps`",
-                            parse_mode="Markdown"
-                        )
-
-                    # Обновляем контекст пользователя в сервисе определения намерений
-                    intent_detection_service.update_user_context(str(user.tg_id),
-                                                                 IntentType.IMAGE_GENERATION,
-                                                                 {"prompt": prompt, "success": True})
-                    return
-
-            # Если не удалось сгенерировать изображение
-            await message.answer(
-                "❌ Не удалось сгенерировать изображение. Пожалуйста, попробуйте другой запрос.",
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard(user, chat)
-            )
-
+            parsed_url = urlparse(url)
+            if not parsed_url.scheme or not parsed_url.netloc:
+                logger.error(f"⬇️ Некорректный URL: {url}")
+                return None
         except Exception as e:
-            logger.error(f"🎨 Ошибка при генерации изображения: {e}", exc_info=True)
+            logger.error(f"⬇️ Ошибка при парсинге URL {url}: {e}")
+            return None
+            
+        try:
+            # Создаем временную директорию, если она не существует
+            temp_dir = os.path.join(tempfile.gettempdir(), "telegram_bot_images")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Генерируем уникальное имя файла
+            file_extension = os.path.splitext(url)[-1]
+            if not file_extension or len(file_extension) < 2:
+                file_extension = ".jpg"  # Устанавливаем расширение по умолчанию
+                
+            filename = f"{uuid.uuid4()}{file_extension}"
+            file_path = os.path.join(temp_dir, filename)
+            
+            # Скачиваем файл с таймаутом
+            async with aiohttp.ClientSession() as session:
+                max_retries = 3
+                for retry in range(max_retries):
+                    try:
+                        async with session.get(url, timeout=30, allow_redirects=True) as response:
+                            if response.status == 404:
+                                logger.error(f"⬇️ Файл не найден на сервере (404): {url}")
+                                return None
+                                
+                            if response.status != 200:
+                                logger.error(f"⬇️ Ошибка при загрузке изображения: HTTP {response.status}")
+                                if retry < max_retries - 1:
+                                    wait_time = 2 ** retry  # Экспоненциальная задержка
+                                    logger.info(f"⬇️ Повторная попытка через {wait_time} сек...")
+                                    await asyncio.sleep(wait_time)
+                                continue
+                                
+                            # Проверяем mime-type для убеждения что это изображение
+                            content_type = response.headers.get('Content-Type', '')
+                            if not content_type.startswith('image/'):
+                                logger.warning(f"⬇️ Скачанный файл не является изображением: {content_type}")
+                                # Все равно попытаемся использовать файл
+                            
+                            # Получаем данные файла
+                            file_data = await response.read()
+                            if not file_data or len(file_data) < 100:
+                                logger.error(f"⬇️ Слишком маленький размер файла: {len(file_data) if file_data else 0} байт")
+                                if retry < max_retries - 1:
+                                    continue
+                                return None
+                            
+                            # Записываем файл
+                            with open(file_path, 'wb') as f:
+                                f.write(file_data)
+                            
+                            # Проверим, что файл действительно создан и имеет размер
+                            if os.path.exists(file_path) and os.path.getsize(file_path) > 100:
+                                logger.info(f"⬇️ Изображение успешно загружено: {file_path}")
+                                return file_path
+                            else:
+                                logger.error(f"⬇️ Файл не создан или имеет недопустимый размер: {os.path.getsize(file_path) if os.path.exists(file_path) else 'не существует'}")
+                                if retry < max_retries - 1:
+                                    continue
+                                return None
+                    except aiohttp.ClientConnectorError as e:
+                        logger.error(f"⬇️ Ошибка подключения к серверу: {e}")
+                        # Если сервер недоступен, нет смысла повторять запрос сразу
+                        return None
+                    except asyncio.TimeoutError:
+                        logger.error(f"⬇️ Таймаут при загрузке изображения (попытка {retry+1}/{max_retries})")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(2 ** retry)
+                    except Exception as e:
+                        logger.error(f"⬇️ Неожиданная ошибка при загрузке изображения: {e}")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(1)
+                        else:
+                            break
+                
+                logger.error(f"⬇️ Не удалось загрузить изображение после {max_retries} попыток")
+                return None
+        except Exception as e:
+            logger.error(f"⬇️ Ошибка при скачивании изображения: {e}")
+            return None
 
-            error_message = str(e)
+    async def process_image_generation(message: Message) -> None:
+        """Обработчик генерации изображений"""
+        start_time = time.time()
+        logger.info(f"🖼️ Запрос на генерацию изображения с текстом: {message.text}")
 
-            # Специальная обработка для разных типов ошибок
-            if "NO_AVAILABLE_ACCOUNTS" in error_message:
-                await message.answer(
-                    "⏳ В данный момент нет доступных аккаунтов для генерации изображений. "
-                    "Пожалуйста, попробуйте позже.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-            elif "FLOOD_ERROR" in error_message:
-                # Извлекаем время ожидания из ошибки
-                import re
-                timeout_match = re.search(r'(\d+\.?\d*)\s*seconds', error_message)
-                timeout = int(float(timeout_match.group(1))) if timeout_match else 60
+        # Получаем данные пользователя и чата
+        try:
+            # Используем существующую функцию из base_handlers
+            from .base_handlers import get_or_create_user, get_or_create_chat
+            
+            # Получаем или создаем пользователя и чат
+            user = await get_or_create_user(message, user_repository)
+            chat = await get_or_create_chat(user, chat_repository)
+            
+            logger.info(f"🖼️ Пользователь: {user.id}, чат: {chat.id}")
+        except Exception as e:
+            logger.error(f"🖼️ Ошибка при получении пользователя/чата: {e}", exc_info=True)
+            await message.answer("Ошибка при обработке запроса. Пожалуйста, начните с команды /start")
+            return
 
-                await message.answer(
-                    f"⏱ Слишком много запросов. Пожалуйста, подождите {timeout} секунд и попробуйте снова.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-            elif "MODEL_NOT_FOUND" in error_message:
-                await message.answer(
-                    "❌ В вашем аккаунте нет доступа к моделям генерации изображений. "
-                    "Пожалуйста, проверьте подписку или свяжитесь с поддержкой.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
-            elif "NOT_ENOUGH_TOKENS" in error_message:
-                await message.answer(
-                    "❌ На вашем аккаунте недостаточно токенов для генерации изображений. "
-                    "Пожалуйста, пополните баланс или привяжите аккаунт с достаточным количеством токенов.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
+        # Устанавливаем статус "загрузка фото"
+        await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
+        
+        try:
+            # Генерируем изображение
+            logger.info(f"🖼️ Передаем запрос на генерацию изображения: {message.text}")
+            response, model = await image_generation_usecase.generate_image_without_switching_chat(user, chat, message.text)
+            
+            # Проверяем на ошибку rate limit
+            if 'error' in response and response['error'] == 'FLOOD_ERROR':
+                logger.warning(f"🖼️ Получена ошибка rate limit при генерации изображения")
+                await message.answer(response['response']['content'])
+                return
+                
+            # Обработка ответа с изображениями
+            if 'response' in response and 'attachments' in response['response'] and response['response']['attachments']:
+                logger.info(f"🖼️ Получены изображения от API: {len(response['response']['attachments'])}")
+                
+                success_count = 0
+                for index, attachment in enumerate(response['response']['attachments']):
+                    logger.info(f"🖼️ Обработка вложения {index+1}: {json.dumps(attachment, ensure_ascii=False)}")
+                    
+                    if 'file' in attachment:
+                        file_data = attachment['file']
+                        logger.info(f"🖼️ Данные файла: {json.dumps(file_data, ensure_ascii=False)}")
+                        
+                        # Проверяем и получаем URL
+                        image_url = None
+                        if isinstance(file_data, dict):
+                            if file_data.get("url"):
+                                image_url = file_data["url"]
+                                logger.info(f"🖼️ Получен URL изображения из поля url: {image_url}")
+                            elif file_data.get("path"):
+                                image_url = f"https://storage.bothub.chat/bothub-storage/{file_data['path']}"
+                                logger.info(f"🖼️ Сформирован URL изображения из path: {image_url}")
+                        elif isinstance(file_data, str):
+                            image_url = file_data
+                            logger.info(f"🖼️ Получен URL изображения из строкового значения: {image_url}")
+                        
+                        if not image_url:
+                            logger.error(f"🖼️ Не удалось получить URL изображения из данных: {json.dumps(file_data, ensure_ascii=False)}")
+                            await message.answer(f"Ошибка: не удалось получить URL изображения из данных сервера.")
+                            continue
+                        
+                        logger.info(f"🖼️ Финальный URL изображения для скачивания: {image_url}")
+                        
+                        # Скачиваем изображение
+                        image_path = await download_image(image_url)
+                        
+                        if image_path:
+                            # Отправляем изображение
+                            try:
+                                # Создаем FSInputFile вместо открытия файла
+                                photo = FSInputFile(image_path)
+                                await message.answer_photo(
+                                    photo=photo,
+                                    caption=f"Сгенерировано моделью: {model}",
+                                    parse_mode="HTML"
+                                )
+                                logger.info(f"🖼️ Изображение успешно отправлено пользователю")
+                                success_count += 1
+                                
+                                # Удаляем временный файл
+                                try:
+                                    os.remove(image_path)
+                                    logger.info(f"🖼️ Временный файл удален: {image_path}")
+                                except Exception as e:
+                                    logger.error(f"🖼️ Ошибка при удалении временного файла: {e}")
+                            except Exception as e:
+                                logger.error(f"🖼️ Ошибка при отправке изображения: {e}")
+                                await message.answer(f"Ошибка при отправке изображения: {str(e)}")
+                        else:
+                            logger.error(f"🖼️ Не удалось скачать изображение: {image_url}")
+                            # Не отправляем сообщение о каждом отдельном изображении, чтобы не спамить
+
+                # Отображаем итоговый результат
+                if success_count > 0:
+                    logger.info(f"🖼️ Успешно отправлено {success_count} из {len(response['response']['attachments'])} изображений")
+                else:
+                    # Проверяем, содержат ли вложения локальные пути
+                    local_paths_detected = False
+                    discord_paths_detected = False
+                    
+                    for attachment in response['response']['attachments']:
+                        if 'file' in attachment and isinstance(attachment['file'], dict):
+                            url = attachment['file'].get('url', '')
+                            if url and "local/images" in url:
+                                local_paths_detected = True
+                            elif url and "discord" in url:
+                                discord_paths_detected = True
+                                
+                    # Формируем соответствующее сообщение пользователю
+                    if local_paths_detected:
+                        logger.error(f"🖼️ Изображения доступны только локально на сервере BotHub и не могут быть загружены")
+                        await message.answer("⚠️ Изображения были сгенерированы, но доступны только локально на сервере и не могут быть загружены в Telegram. Это связано с настройкой сервера Bothub.")
+                    elif discord_paths_detected:
+                        logger.error(f"🖼️ Обнаружены ссылки Discord, которые недоступны")
+                        await message.answer("⚠️ Изображения были сгенерированы, но ссылки на них недоступны. Возможно, файлы были удалены с сервера. Пожалуйста, попробуйте еще раз.")
+                    else:
+                        logger.error(f"🖼️ Не удалось отправить ни одного изображения")
+                        await message.answer("К сожалению, не удалось загрузить ни одного изображения. Возможно, файлы недоступны на сервере или были удалены. Пожалуйста, попробуйте другой запрос.")
             else:
-                await message.answer(
-                    "❌ Произошла ошибка при генерации изображения. Пожалуйста, попробуйте позже.",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard(user, chat)
-                )
+                # Если нет вложений, отправляем текстовое сообщение
+                logger.warning(f"🖼️ Нет вложений в ответе от API")
+                content = response.get('response', {}).get('content', 'Не удалось сгенерировать изображение.')
+                await message.answer(content)
+                
+        except Exception as e:
+            logger.error(f"🖼️ Ошибка при генерации изображения: {e}", exc_info=True)
+            await message.answer(f"Ошибка при генерации изображения: {str(e)}")
+        finally:
+            # Логируем время выполнения
+            end_time = time.time()
+            logger.info(f"🖼️ Время обработки запроса на генерацию изображения: {end_time - start_time:.2f} сек")
 
     @router.message(F.text == "🎨 Сменить модель изображений")
     async def handle_image_model_button(message: Message):
@@ -261,7 +389,7 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
                 image_prompt = intent_data.get("prompt", message.text)
 
                 # Обрабатываем запрос на генерацию изображения
-                await process_image_generation(message, user, chat, image_prompt)
+                await process_image_generation(message)
                 return
 
             # Сообщаем пользователю, что бот печатает

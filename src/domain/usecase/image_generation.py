@@ -117,9 +117,23 @@ class ImageGenerationUseCase:
             await self.gateway.create_new_chat(user, chat, is_image_generation=True)
             logger.info(f"🎨 Чат для генерации изображений создан с ID: {chat.bothub_chat_id}")
 
-            # Генерируем изображение
+            # Генерируем изображение - с детальным логированием ответа
             logger.info(f"🎨 Отправка запроса на генерацию изображения с промптом: '{prompt}'")
             result = await self.gateway.send_message(user, chat, prompt, files)
+            
+            # Обрабатываем возможную ошибку rate limit
+            if 'error' in result and result['error'] == 'FLOOD_ERROR':
+                wait_time = result.get('wait_time', 60)
+                logger.warning(f"🎨 Получена ошибка rate limit. Требуется подождать {wait_time} секунд.")
+                
+                # Пропускаем повторные попытки при ошибке rate limit
+                return {
+                    "response": {
+                        "content": f"Слишком много запросов. Пожалуйста, подождите {wait_time} секунд и попробуйте снова."
+                    },
+                    "error": "FLOOD_ERROR"
+                }, chosen_model
+            
             logger.info(f"🎨 Получен ответ от API: {result}")
 
             return result, chosen_model
