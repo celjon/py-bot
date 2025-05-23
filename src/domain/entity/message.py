@@ -1,4 +1,3 @@
-# src/domain/entity/message.py
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from datetime import datetime

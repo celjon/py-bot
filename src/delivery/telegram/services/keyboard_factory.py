@@ -1,4 +1,3 @@
-# src/delivery/telegram/services/keyboard_factory.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Dict, Any, Optional
 from .callback_data import CallbackData

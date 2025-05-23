@@ -1,4 +1,3 @@
-# src/delivery/telegram/handlers/account_handlers.py
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -11,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 async def handle_link_account_logic(message: Message, user_repository, chat_repository, account_connection_usecase):
     """Общая логика для обработки команды привязки аккаунта"""
-    # ИСПРАВЛЕНИЕ: Используем единую функцию получения пользователя
     user = await get_or_create_user(message, user_repository)
     chat = await get_or_create_chat(user, chat_repository)
 

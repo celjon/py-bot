@@ -1,4 +1,3 @@
-# src/delivery/telegram/services/account_service.py
 import logging
 from typing import Tuple
 from src.domain.entity.user import User

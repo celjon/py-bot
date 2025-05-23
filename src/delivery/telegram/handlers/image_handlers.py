@@ -5,15 +5,13 @@ import json
 import logging
 from ..keyboards.inline_keyboards import get_image_model_inline_keyboard
 from ..keyboards.main_keyboard import get_main_keyboard
-from .base_handlers import get_or_create_user, get_or_create_chat
+from .base_handlers import get_or_create_user, get_or_create_chat, get_or_create_user_from_callback
 from aiogram.enums.chat_action import ChatAction
 
 logger = logging.getLogger(__name__)
 
 def register_image_handlers(router: Router, image_generation_usecase, user_repository, chat_repository):
     """Регистрация обработчиков для генерации изображений"""
-
-    # В начале файла добавим функцию для обработки команды, чтобы её можно было импортировать в message_handlers.py
 
     @router.message(Command("image_model"))
     async def handle_image_model_command(message: Message):
@@ -70,8 +68,6 @@ def register_image_handlers(router: Router, image_generation_usecase, user_repos
         """Обработка нажатия на кнопку смены модели генерации изображений"""
         await handle_image_model_command(message)
 
-    from .base_handlers import get_or_create_user, get_or_create_chat, get_or_create_user_from_callback
-
     def is_image_model_callback(callback: CallbackQuery) -> bool:
         """Проверяет, является ли callback выбором модели изображения"""
         try:
@@ -102,7 +98,7 @@ def register_image_handlers(router: Router, image_generation_usecase, user_repos
                 await callback.answer("⛔ Эта модель недоступна в вашем тарифе")
                 return
 
-            # ИСПРАВЛЕНИЕ: Используем правильную функцию для callback!
+            # Используем правильную функцию для callback
             user = await get_or_create_user_from_callback(callback, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
 

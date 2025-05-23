@@ -1,4 +1,3 @@
-# src/delivery/telegram/handlers/message_handlers.py
 from aiogram import Router, F
 from aiogram.types import Message, FSInputFile
 from aiogram.enums.chat_action import ChatAction
@@ -38,7 +37,6 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
         # Проверка для локальных путей в URL
         if "local/images" in url:
             logger.warning(f"⬇️ URL содержит указание на локальное хранилище: {url}")
-            # Изображение может быть недоступно извне, но попробуем скачать
         
         # Проверим валидность URL
         try:
@@ -130,19 +128,17 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
             return None
 
     async def process_image_generation(message: Message) -> None:
-        """Обработчик генерации изображений"""
+        """Обработчик генерации изображений - исправленная версия"""
         start_time = time.time()
         logger.info(f"🖼️ Запрос на генерацию изображения с текстом: {message.text}")
 
         # Получаем данные пользователя и чата
         try:
-            # Используем существующую функцию из base_handlers
             from .base_handlers import get_or_create_user, get_or_create_chat
-            
-            # Получаем или создаем пользователя и чат
+
             user = await get_or_create_user(message, user_repository)
             chat = await get_or_create_chat(user, chat_repository)
-            
+
             logger.info(f"🖼️ Пользователь: {user.id}, чат: {chat.id}")
         except Exception as e:
             logger.error(f"🖼️ Ошибка при получении пользователя/чата: {e}", exc_info=True)
@@ -151,118 +147,90 @@ def register_message_handlers(router: Router, chat_session_usecase, image_genera
 
         # Устанавливаем статус "загрузка фото"
         await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
-        
+
         try:
-            # Генерируем изображение
-            logger.info(f"🖼️ Передаем запрос на генерацию изображения: {message.text}")
-            response, model = await image_generation_usecase.generate_image_without_switching_chat(user, chat, message.text)
-            
+            # ВАЖНО: Делаем только ОДИН запрос на генерацию
+            logger.info(f"🖼️ Выполняю ЕДИНСТВЕННЫЙ запрос на генерацию изображения")
+            response, model = await image_generation_usecase.generate_image_without_switching_chat(
+                user, chat, message.text
+            )
+
             # Проверяем на ошибку rate limit
             if 'error' in response and response['error'] == 'FLOOD_ERROR':
                 logger.warning(f"🖼️ Получена ошибка rate limit при генерации изображения")
                 await message.answer(response['response']['content'])
                 return
-                
+
             # Обработка ответа с изображениями
-            if 'response' in response and 'attachments' in response['response'] and response['response']['attachments']:
-                logger.info(f"🖼️ Получены изображения от API: {len(response['response']['attachments'])}")
-                
+            if ('response' in response and 'attachments' in response['response'] and
+                    response['response']['attachments']):
+
+                logger.info(f"🖼️ Получено {len(response['response']['attachments'])} изображений от API")
+
                 success_count = 0
                 for index, attachment in enumerate(response['response']['attachments']):
-                    logger.info(f"🖼️ Обработка вложения {index+1}: {json.dumps(attachment, ensure_ascii=False)}")
-                    
+                    logger.info(f"🖼️ Обработка вложения {index + 1}")
+
                     if 'file' in attachment:
                         file_data = attachment['file']
-                        logger.info(f"🖼️ Данные файла: {json.dumps(file_data, ensure_ascii=False)}")
-                        
-                        # Проверяем и получаем URL
+
+                        # Получаем URL изображения
                         image_url = None
                         if isinstance(file_data, dict):
                             if file_data.get("url"):
                                 image_url = file_data["url"]
-                                logger.info(f"🖼️ Получен URL изображения из поля url: {image_url}")
                             elif file_data.get("path"):
                                 image_url = f"https://storage.bothub.chat/bothub-storage/{file_data['path']}"
-                                logger.info(f"🖼️ Сформирован URL изображения из path: {image_url}")
                         elif isinstance(file_data, str):
                             image_url = file_data
-                            logger.info(f"🖼️ Получен URL изображения из строкового значения: {image_url}")
-                        
+
                         if not image_url:
-                            logger.error(f"🖼️ Не удалось получить URL изображения из данных: {json.dumps(file_data, ensure_ascii=False)}")
-                            await message.answer(f"Ошибка: не удалось получить URL изображения из данных сервера.")
+                            logger.error(f"🖼️ Не удалось получить URL изображения")
                             continue
-                        
-                        logger.info(f"🖼️ Финальный URL изображения для скачивания: {image_url}")
-                        
-                        # Скачиваем изображение
+
+                        logger.info(f"🖼️ URL изображения: {image_url}")
+
+                        # Скачиваем и отправляем изображение
                         image_path = await download_image(image_url)
-                        
+
                         if image_path:
-                            # Отправляем изображение
                             try:
-                                # Создаем FSInputFile вместо открытия файла
                                 photo = FSInputFile(image_path)
                                 await message.answer_photo(
                                     photo=photo,
                                     caption=f"Сгенерировано моделью: {model}",
                                     parse_mode="HTML"
                                 )
-                                logger.info(f"🖼️ Изображение успешно отправлено пользователю")
+                                logger.info(f"🖼️ Изображение успешно отправлено")
                                 success_count += 1
-                                
+
                                 # Удаляем временный файл
                                 try:
                                     os.remove(image_path)
-                                    logger.info(f"🖼️ Временный файл удален: {image_path}")
                                 except Exception as e:
                                     logger.error(f"🖼️ Ошибка при удалении временного файла: {e}")
                             except Exception as e:
                                 logger.error(f"🖼️ Ошибка при отправке изображения: {e}")
                                 await message.answer(f"Ошибка при отправке изображения: {str(e)}")
                         else:
-                            logger.error(f"🖼️ Не удалось скачать изображение: {image_url}")
-                            # Не отправляем сообщение о каждом отдельном изображении, чтобы не спамить
+                            logger.error(f"🖼️ Не удалось скачать изображение")
 
-                # Отображаем итоговый результат
-                if success_count > 0:
-                    logger.info(f"🖼️ Успешно отправлено {success_count} из {len(response['response']['attachments'])} изображений")
-                else:
-                    # Проверяем, содержат ли вложения локальные пути
-                    local_paths_detected = False
-                    discord_paths_detected = False
-                    
-                    for attachment in response['response']['attachments']:
-                        if 'file' in attachment and isinstance(attachment['file'], dict):
-                            url = attachment['file'].get('url', '')
-                            if url and "local/images" in url:
-                                local_paths_detected = True
-                            elif url and "discord" in url:
-                                discord_paths_detected = True
-                                
-                    # Формируем соответствующее сообщение пользователю
-                    if local_paths_detected:
-                        logger.error(f"🖼️ Изображения доступны только локально на сервере BotHub и не могут быть загружены")
-                        await message.answer("⚠️ Изображения были сгенерированы, но доступны только локально на сервере и не могут быть загружены в Telegram. Это связано с настройкой сервера Bothub.")
-                    elif discord_paths_detected:
-                        logger.error(f"🖼️ Обнаружены ссылки Discord, которые недоступны")
-                        await message.answer("⚠️ Изображения были сгенерированы, но ссылки на них недоступны. Возможно, файлы были удалены с сервера. Пожалуйста, попробуйте еще раз.")
-                    else:
-                        logger.error(f"🖼️ Не удалось отправить ни одного изображения")
-                        await message.answer("К сожалению, не удалось загрузить ни одного изображения. Возможно, файлы недоступны на сервере или были удалены. Пожалуйста, попробуйте другой запрос.")
+                # Итоговое сообщение
+                if success_count == 0:
+                    await message.answer(
+                        "К сожалению, не удалось загрузить изображения. Возможно, они недоступны на сервере.")
             else:
                 # Если нет вложений, отправляем текстовое сообщение
-                logger.warning(f"🖼️ Нет вложений в ответе от API")
                 content = response.get('response', {}).get('content', 'Не удалось сгенерировать изображение.')
                 await message.answer(content)
-                
+
         except Exception as e:
             logger.error(f"🖼️ Ошибка при генерации изображения: {e}", exc_info=True)
             await message.answer(f"Ошибка при генерации изображения: {str(e)}")
         finally:
             # Логируем время выполнения
             end_time = time.time()
-            logger.info(f"🖼️ Время обработки запроса на генерацию изображения: {end_time - start_time:.2f} сек")
+            logger.info(f"🖼️ Время обработки запроса: {end_time - start_time:.2f} сек")
 
     @router.message(F.text == "🎨 Сменить модель изображений")
     async def handle_image_model_button(message: Message):

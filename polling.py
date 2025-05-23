@@ -1,4 +1,4 @@
-# polling.py
+
 import asyncio
 import logging
 from src.config.settings import get_settings

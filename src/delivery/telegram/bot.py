@@ -1,4 +1,3 @@
-# src/delivery/telegram/bot.py
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer

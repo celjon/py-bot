@@ -1,4 +1,3 @@
-# src/lib/clients/telegram_client.py
 import logging
 import aiohttp
 import json

@@ -1,5 +1,3 @@
-# src/delivery/telegram/keyboards/inline_keyboards.py
-
 import json
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Dict, Optional

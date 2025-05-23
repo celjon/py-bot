@@ -1,4 +1,3 @@
-# docker-compose-simple.yml (упрощенная версия)
 version: '3.8'
 
 services:

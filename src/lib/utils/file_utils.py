@@ -1,4 +1,3 @@
-# src/lib/utils/file_utils.py
 import os
 import time
 import aiohttp
