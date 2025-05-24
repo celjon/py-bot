@@ -46,9 +46,11 @@ class IntentDetectionService:
 
         # Ключевые слова для определения намерения генерации изображений
         self.image_generation_keywords = [
-            r"\b(нарисуй|сгенерируй|создай|изобрази|draw|generate|create|picture|image|imagine|visualize)\b.*\b(картинку|изображение|фото|фотографию|арт)\b",
+            r"\b(нарисуй|сгенерируй|сгенер[ие]руй|генерируй|создай|изобрази|draw|generate|create|picture|image|imagine|visualize)\b.*\b(картинку|изображение|фото|фотографию|арт)\b",
             r"\bнарисуй\b",
             r"\bсгенерируй\b",
+            r"\bсгенер[ие]руй\b",  # Учитываем распространенную опечатку
+            r"\bгенерируй\b",
             r"\bсоздай\b",
             r"\bизобрази\b",
             r"\bdraw\b",

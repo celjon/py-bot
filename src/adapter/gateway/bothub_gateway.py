@@ -4,6 +4,7 @@ import logging
 from src.lib.clients.bothub_client import BothubClient
 from src.domain.entity.user import User
 from src.domain.entity.chat import Chat
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +88,49 @@ class BothubGateway:
 
                 # Специальная логика для flux моделей (как в PHP)
                 if 'flux' in image_model:
+                    # Получаем список доступных моделей
+                    models = await self.client.list_models(access_token)
+                    
+                    # Логируем доступные модели для отладки
+                    logger.info(f"🔍 Доступные модели: {json.dumps([{
+                        'id': m.get('id'),
+                        'name': m.get('name'),
+                        'is_allowed': m.get('is_allowed') or m.get('isAllowed'),
+                        'features': m.get('features', []),
+                        'parent_id': m.get('parent_id')
+                    } for m in models], ensure_ascii=False, indent=2)}")
+                    
+                    # Ищем родительскую модель для Flux
+                    parent_model = None
+                    for model in models:
+                        logger.info(f"🔍 Проверяем модель: id={model.get('id')}, name={model.get('name')}, "
+                                  f"parent_id={model.get('parent_id')}")
+                        # Проверяем различные варианты идентификации Flux модели
+                        is_flux = any([
+                            model.get("id") == "replicate-flux",
+                            model.get("name", "").lower() == "flux",
+                            "flux" in model.get("id", "").lower(),
+                            "flux" in model.get("name", "").lower(),
+                            model.get("parent_id") == "replicate-flux"
+                        ])
+                        if is_flux and (model.get("is_allowed") or model.get("isAllowed")):
+                            parent_model = model
+                            logger.info(f"✅ Найдена подходящая Flux модель: {json.dumps(model, ensure_ascii=False, indent=2)}")
+                            break
+
+                    if not parent_model:
+                        raise Exception("Модель Flux недоступна на сервере")
+                    
+                    # Используем ID самой модели для создания чата
+                    model_id_for_chat = parent_model.get("id")  # Убираем parent_id
+                    logger.info(f"📝 Создаем чат с model_id: {model_id_for_chat}")
+                    
                     response = await self.client.create_new_chat(
-                        access_token, user.bothub_group_id, name, 'replicate-flux'
+                        access_token, user.bothub_group_id, name, model_id_for_chat
                     )
                     chat_id = response['id']
-                    # Обновляем родительскую модель и сохраняем конкретную модель
-                    await self.client.update_parent_model(access_token, chat_id, 'replicate-flux')
-                    await self.client.save_model(access_token, chat_id, image_model)
-                    model_id = image_model
+                    # Больше не нужно обновлять родительскую модель, так как мы используем правильный ID
+                    model_id = model_id_for_chat
                 else:
                     response = await self.client.create_new_chat(
                         access_token, user.bothub_group_id, name, image_model
